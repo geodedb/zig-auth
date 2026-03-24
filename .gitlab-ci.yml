@@ -49,8 +49,7 @@ zig-format:
   script:
     - zig fmt --check src/ tests/ build.zig
   needs:
-    - job: build
-      artifacts: true
+    - build
 
 # Build job — also caches the Zig toolchain for other jobs
 build:
@@ -60,10 +59,13 @@ build:
     - *install-zig
   script:
     - zig build
+  after_script:
+    - ln -sfn "zig-x86_64-linux-${ZIG_VERSION}" zig-toolchain
   artifacts:
     paths:
       - zig-out/
-      - "zig-x86_64-linux-${ZIG_VERSION}/"
+      - zig-toolchain
+      - zig-x86_64-linux-*/
     expire_in: 1 hour
 
 # Unit tests
