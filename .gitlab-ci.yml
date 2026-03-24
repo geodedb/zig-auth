@@ -44,13 +44,15 @@ zig-format:
   stage: test
   image: debian:bookworm-slim
   before_script:
-    - *install-zig
+    - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
+    - zig version
   script:
     - zig fmt --check src/ tests/ build.zig
   needs:
-    - build
+    - job: build
+      artifacts: true
 
-# Build job
+# Build job — also caches the Zig toolchain for other jobs
 build:
   stage: build
   image: debian:bookworm-slim
@@ -61,6 +63,7 @@ build:
   artifacts:
     paths:
       - zig-out/
+      - "zig-x86_64-linux-${ZIG_VERSION}/"
     expire_in: 1 hour
 
 # Unit tests
