@@ -1,16 +1,18 @@
 # auth Documentation
 
-## Overview
+Reusable authentication primitives for Zig applications.
 
-A Zig library for auth
+## Contents
 
-## Table of Contents
+- [Requirements](REQUIREMENTS.md) -- Functional, packaging, and test requirements
+- [Gap Analysis](GAP_ANALYSIS.md) -- Open gaps and requirements tracker
+- [Resolved Gaps](GAP_ANALYSIS_RESOLVED.md) -- Closed gaps with evidence
 
-- [Getting Started](getting-started.md)
-- [API Reference](api-reference.md)
-- [Examples](examples.md)
-- [Architecture](architecture.md)
-- [FAQ](faq.md)
+## Audit Reports
+
+- [Quality](QUALITY_GAP_ANALYSIS.md) -- Code quality findings
+- [Performance](PERF_GAP_ANALYSIS.md) -- Performance findings
+- [Security](SECURITY_GAP_ANALYSIS.md) -- Security findings
 
 ## Quick Links
 

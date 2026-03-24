@@ -3,22 +3,29 @@
 
 //! # auth
 //!
-//! A Zig library for auth
+//! Reusable authentication primitives for Zig applications.
 //!
-//! ## Features
+//! ## Modules
 //!
-//! - Feature 1
-//! - Feature 2
-//! - Feature 3
+//! - **hmac** — HMAC-SHA256 record hashing, chain integrity, and HKDF key derivation
+//! - **api_keys** — API key creation, validation, revocation, and Bearer token parsing
+//! - **mfa** — TOTP enrollment, code generation, and verification (RFC 6238)
 //!
 //! ## Quick Start
 //!
 //! ```zig
 //! const auth = @import("auth");
 //!
-//! pub fn main() !void {
-//!     // Your code here
-//! }
+//! // HMAC chain integrity
+//! const key = auth.hmac.deriveHmacKey(&master_key, .{});
+//!
+//! // API key management
+//! var mgr = auth.api_keys.ApiKeyManager.init(allocator, .{});
+//! defer mgr.deinit();
+//!
+//! // MFA enrollment
+//! const enrollment = try auth.mfa.enroll(allocator, "alice", .{});
+//! defer enrollment.deinit(allocator);
 //! ```
 //!
 //! ## License
@@ -27,54 +34,23 @@
 
 const std = @import("std");
 
-/// Library version
+/// Library version.
 pub const version = "0.1.0";
 
-// Re-export submodules here as the library grows:
-// pub const submodule = @import("submodule.zig");
+/// HMAC-SHA256 record hashing, chain integrity, and HKDF key derivation.
+pub const hmac = @import("hmac.zig");
 
-// ============================================================================
-// Public Types
-// ============================================================================
+/// API key creation, validation, revocation, and Bearer token parsing.
+pub const api_keys = @import("api_keys.zig");
 
-/// Example configuration structure
-pub const Config = struct {
-    /// Enable debug output
-    debug: bool = false,
-    /// Maximum retry attempts
-    max_retries: u32 = 3,
-    /// Timeout in milliseconds
-    timeout_ms: u64 = 30_000,
-};
-
-// ============================================================================
-// Public Functions
-// ============================================================================
-
-/// Initialize the library with the given configuration.
-///
-/// Returns an error if the configuration is invalid.
-pub fn init(config: Config) !void {
-    _ = config;
-    // Implementation here
-}
+/// TOTP enrollment, code generation, and verification (RFC 6238).
+pub const mfa = @import("mfa.zig");
 
 // ============================================================================
 // Unit Tests
 // ============================================================================
 
-test "Config default values" {
-    const config = Config{};
-    try std.testing.expectEqual(false, config.debug);
-    try std.testing.expectEqual(@as(u32, 3), config.max_retries);
-    try std.testing.expectEqual(@as(u64, 30_000), config.timeout_ms);
-}
-
-test "init with default config" {
-    try init(.{});
-}
-
 test {
-    // Ensure all declarations are referenced for test coverage
+    // Ensure all submodule tests are run.
     std.testing.refAllDecls(@This());
 }

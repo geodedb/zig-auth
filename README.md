@@ -3,14 +3,16 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.15.1+-orange.svg)](https://ziglang.org/)
 
-A Zig library for auth
+Reusable authentication primitives for Zig applications.
 
 ## Features
 
+- **HMAC Chain Integrity** -- HMAC-SHA256 record hashing, HKDF key derivation, chain tamper detection
+- **API Key Management** -- Create, validate, revoke API keys with configurable prefixes and scoped access
+- **MFA/TOTP** -- RFC 6238 TOTP enrollment, code generation, and verification
 - **Zero Dependencies**: Pure Zig standard library only
-- **Memory Safe**: Proper allocation patterns with no leaks
-- **Cross-Platform**: Linux, macOS, Windows support
-- **Well Tested**: Comprehensive unit and integration tests
+- **Memory Safe**: Leak-free allocation patterns with `secureZero` on secrets
+- **Well Tested**: 59 tests (47 unit + 12 integration), zero leaks
 
 ## Installation
 
@@ -40,14 +42,19 @@ exe.root_module.addImport("auth", auth.module("auth"));
 ## Quick Start
 
 ```zig
-const std = @import("std");
 const auth = @import("auth");
 
-pub fn main() !void {
-    try auth.init(.{
-        .debug = true,
-    });
-}
+// HMAC chain integrity
+const key = auth.hmac.deriveHmacKey(&master_key, .{});
+
+// API key management
+var mgr = auth.api_keys.ApiKeyManager.init(allocator, .{});
+defer mgr.deinit();
+const key_string = try mgr.createKey(user_id, "my-key", &.{"read"}, null);
+
+// MFA enrollment
+const enrollment = try auth.mfa.enroll(allocator, "alice", .{});
+defer enrollment.deinit(allocator);
 ```
 
 ## Requirements

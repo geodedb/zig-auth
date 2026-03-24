@@ -21,6 +21,7 @@ test_*
 !tests/
 
 # Build artifacts
+basic_example
 *.exe
 *.dll
 *.so
