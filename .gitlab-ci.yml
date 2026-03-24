@@ -33,7 +33,7 @@ stages:
 # Zig installation template
 .install-zig: &install-zig
   - apt-get update && apt-get install -y curl xz-utils
-  - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+  - curl -fsSL --retry 3 --retry-delay 5 "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
   - tar -xf zig.tar.xz
   - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
   - zig version
