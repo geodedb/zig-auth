@@ -38,6 +38,16 @@ stages:
   - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
   - zig version
 
+# Override zig-format from CI catalog to use our install method
+# (the catalog component uses old URL format incompatible with 0.15.x)
+zig-format:
+  stage: lint
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig fmt --check src/ tests/ build.zig
+
 # Build job
 build:
   stage: build
