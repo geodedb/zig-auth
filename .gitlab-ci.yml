@@ -42,12 +42,8 @@ stages:
 # download URL format incompatible with Zig 0.15.x. Run format check in
 # the build job instead and disable the catalog job.
 zig-format:
-  stage: lint
-  image: alpine:latest
-  script:
-    - echo "Format check runs in the build job (zig-format catalog component incompatible with 0.15.x)"
   rules:
-    - when: always
+    - when: never
 
 # Build job (includes format check)
 build:
