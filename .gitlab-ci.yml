@@ -9,7 +9,7 @@ include:
   - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
   - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
 
-  # Code quality
+  # Code quality (overridden below — catalog component uses old URL format)
   - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
 
   # SBOM
@@ -38,34 +38,29 @@ stages:
   - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
   - zig version
 
-# Override zig-format from CI catalog to use our install method
-# (the catalog component uses old URL format incompatible with 0.15.x)
+# Override zig-format from CI catalog — the catalog component uses an old
+# download URL format incompatible with Zig 0.15.x. Run format check in
+# the build job instead and disable the catalog job.
 zig-format:
-  stage: test
-  image: debian:bookworm-slim
-  before_script:
-    - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
-    - zig version
+  stage: lint
+  image: alpine:latest
   script:
-    - zig fmt --check src/ tests/ build.zig
-  needs:
-    - build
+    - echo "Format check runs in the build job (zig-format catalog component incompatible with 0.15.x)"
+  rules:
+    - when: always
 
-# Build job — also caches the Zig toolchain for other jobs
+# Build job (includes format check)
 build:
   stage: build
   image: debian:bookworm-slim
   before_script:
     - *install-zig
   script:
+    - zig fmt --check src/ tests/ build.zig
     - zig build
-  after_script:
-    - ln -sfn "zig-x86_64-linux-${ZIG_VERSION}" zig-toolchain
   artifacts:
     paths:
       - zig-out/
-      - zig-toolchain
-      - zig-x86_64-linux-*/
     expire_in: 1 hour
 
 # Unit tests
