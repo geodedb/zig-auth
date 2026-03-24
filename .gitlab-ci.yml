@@ -41,12 +41,14 @@ stages:
 # Override zig-format from CI catalog to use our install method
 # (the catalog component uses old URL format incompatible with 0.15.x)
 zig-format:
-  stage: lint
+  stage: test
   image: debian:bookworm-slim
   before_script:
     - *install-zig
   script:
     - zig fmt --check src/ tests/ build.zig
+  needs:
+    - build
 
 # Build job
 build:
