@@ -52,7 +52,7 @@ pub const ApiKeyManager = struct {
     allocator: Allocator,
     config: Config,
     keys: std.AutoHashMap([TOKEN_ID_SIZE]u8, ApiKey),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: Allocator, config: Config) Self {
         return .{
