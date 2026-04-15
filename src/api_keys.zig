@@ -64,8 +64,8 @@ pub const ApiKeyManager = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         var it = self.keys.iterator();
         while (it.next()) |entry| {
@@ -87,8 +87,8 @@ pub const ApiKeyManager = struct {
         scopes: []const []const u8,
         expires_in_seconds: ?i64,
     ) ![]u8 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         // Generate cryptographically random token ID and secret.
         var id: [TOKEN_ID_SIZE]u8 = undefined;
@@ -149,8 +149,8 @@ pub const ApiKeyManager = struct {
         crypto.hash.sha2.Sha256.hash(&parsed.secret, &provided_hash, .{});
         defer crypto.secureZero(u8, &provided_hash);
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         const key = self.keys.getPtr(parsed.id) orelse return null;
 
@@ -183,8 +183,8 @@ pub const ApiKeyManager = struct {
 
     /// Revoke an API key by ID.
     pub fn revokeKey(self: *Self, id: [TOKEN_ID_SIZE]u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         if (self.keys.getPtr(id)) |key| {
             key.is_active = false;
@@ -195,8 +195,8 @@ pub const ApiKeyManager = struct {
 
     /// Revoke all keys for a user.
     pub fn revokeUserKeys(self: *Self, user_id: u64) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         var count: usize = 0;
         var it = self.keys.iterator();
@@ -212,8 +212,8 @@ pub const ApiKeyManager = struct {
     /// List all keys for a user. Returns owned copies; caller must
     /// call `freeKeyList` to release the returned slice.
     pub fn listUserKeys(self: *Self, allocator: Allocator, user_id: u64) ![]ApiKey {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         var list: std.ArrayListUnmanaged(ApiKey) = .empty;
         var cloned_count: usize = 0;
@@ -250,8 +250,8 @@ pub const ApiKeyManager = struct {
 
     /// Delete expired keys (cleanup). Returns the number of keys removed.
     pub fn cleanupExpired(self: *Self) !usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         var to_remove: std.ArrayListUnmanaged([TOKEN_ID_SIZE]u8) = .empty;
         defer to_remove.deinit(self.allocator);
