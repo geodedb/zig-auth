@@ -59,7 +59,7 @@ pub const ApiKeyManager = struct {
             .allocator = allocator,
             .config = config,
             .keys = std.AutoHashMap([TOKEN_ID_SIZE]u8, ApiKey).init(allocator),
-            .mutex = .{},
+            .mutex = std.Io.Mutex.init,
         };
     }
 
