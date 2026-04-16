@@ -126,7 +126,7 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
         defer crypto.secureZero(u8, &prk);
         HkdfSha256.expand(secret[0..20], "totp-secret-v1", prk);
     } else {
-        crypto.random.bytes(secret);
+        std.Io.Threaded.global_single_threaded.io().random(secret);
     }
     return secret;
 }

@@ -93,15 +93,15 @@ pub const ApiKeyManager = struct {
         // Generate cryptographically random token ID and secret.
         var id: [TOKEN_ID_SIZE]u8 = undefined;
         var secret: [SECRET_SIZE]u8 = undefined;
-        crypto.random.bytes(&id);
-        crypto.random.bytes(&secret);
+        std.Io.Threaded.global_single_threaded.io().random(&id);
+        std.Io.Threaded.global_single_threaded.io().random(&secret);
 
         // Hash the secret for storage (never store raw secret).
         var secret_hash: [32]u8 = undefined;
         crypto.hash.sha2.Sha256.hash(&secret, &secret_hash, .{});
         defer crypto.secureZero(u8, &secret);
 
-        const now = std.time.timestamp();
+        const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
         const expires_at: ?i64 = if (expires_in_seconds) |exp| now + exp else null;
 
         // Format key string BEFORE inserting into map.
@@ -157,7 +157,7 @@ pub const ApiKeyManager = struct {
         if (!key.is_active) return null;
 
         if (key.expires_at) |exp| {
-            if (std.time.timestamp() >= exp) {
+            if (std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds() >= exp) {
                 key.is_active = false;
                 return null;
             }
@@ -167,7 +167,7 @@ pub const ApiKeyManager = struct {
             return null;
         }
 
-        key.last_used_at = std.time.timestamp();
+        key.last_used_at = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
         return key.*;
     }
 
@@ -256,7 +256,7 @@ pub const ApiKeyManager = struct {
         var to_remove: std.ArrayListUnmanaged([TOKEN_ID_SIZE]u8) = .empty;
         defer to_remove.deinit(self.allocator);
 
-        const now = std.time.timestamp();
+        const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
         var it = self.keys.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.expires_at) |exp| {
