@@ -46,6 +46,19 @@ pub const api_keys = @import("api_keys.zig");
 /// TOTP enrollment, code generation, and verification (RFC 6238).
 pub const mfa = @import("mfa.zig");
 
+/// otel instrumentation seam. When `-Dwith_otel=false` (the default) every
+/// helper compiles to a comptime-known no-op; when `-Dwith_otel=true` calls
+/// forward to the `otel` SDK. Domain-specific helpers
+/// (`startAuthnSpan`, `endAuthnSpan`, `startAuthzSpan`, `endAuthzSpan`)
+/// emit security-relevant events without ever passing credential material.
+pub const observability = @import("observability");
+
+/// otel bootstrap helper — only available when `-Dwith_otel=true`. Builds
+/// TracerProvider/MeterProvider/LoggerProvider from `OTEL_*` env vars and
+/// publishes globals. Gated at the importer site so the disabled build
+/// never compiles otel-touching code.
+pub const observability_init = if (observability.enabled) @import("observability_init") else struct {};
+
 // ============================================================================
 // Unit Tests
 // ============================================================================
