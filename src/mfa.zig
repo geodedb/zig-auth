@@ -15,6 +15,12 @@ const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 const HmacSha1 = std.crypto.auth.hmac.HmacSha1;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
+// otel seam — credentials NEVER pass to the seam. Only the auth-method
+// label ("mfa", "mfa.enroll") and the post-success subject id (the
+// already-public username on enrollment) reach span attributes; the
+// secret, scratch codes, and TOTP code itself stay on the local stack
+// and are zeroised on return.
+const observability = @import("observability");
 
 /// MFA configuration.
 pub const MfaConfig = struct {
@@ -133,7 +139,17 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
 
 /// Enroll a user for TOTP MFA.
 /// Returns the Base32 secret and scratch codes.
+///
+/// Telemetry: emits one `auth.mfa.enroll` span per call. Subject id is
+/// the `username` — at enrollment time the username IS the public
+/// identifier being enrolled (not a credential — the secret is what's
+/// new and it stays on the stack). On any error path the span closes
+/// `.error_` with no subject id attached.
 pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !Enrollment {
+    const span = observability.startAuthnSpan("mfa.enroll");
+    var ok: bool = false;
+    defer observability.endAuthnSpan(span, ok, if (ok) username else null);
+
     const raw_secret = try generateSecret(allocator, username, config);
     defer {
         crypto.secureZero(u8, raw_secret);
@@ -167,6 +183,7 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !En
         scodes[allocated] = code;
     }
 
+    ok = true;
     return Enrollment{ .secret_base32 = secret_base32, .scratch_codes = scodes };
 }
 
@@ -205,7 +222,17 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
 /// Verify a TOTP code against a Base32-encoded secret, checking within the
 /// configured time window to account for clock skew.
 /// Uses constant-time comparison to prevent timing side-channels.
+///
+/// Telemetry: emits one `auth.mfa` span per call. NO subject id is
+/// attached — `verifyCode` receives only the secret blob and code; it
+/// has no notion of who the verifier is. Span status: `.ok` on accept,
+/// `.error_` on reject. The secret_base32 and code values NEVER appear
+/// as span attributes.
 pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !bool {
+    const span = observability.startAuthnSpan("mfa");
+    var ok: bool = false;
+    defer observability.endAuthnSpan(span, ok, null);
+
     // Decode the secret once (not per-iteration).
     const secret_raw = try base32Decode(allocator, secret_base32);
     defer {
@@ -233,6 +260,7 @@ pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms:
             match = true;
         }
     }
+    ok = match;
     return match;
 }
 

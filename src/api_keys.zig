@@ -11,6 +11,11 @@
 const std = @import("std");
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
+// otel seam — when `-Dwith_otel=false` (default) every helper below
+// compiles to a comptime-known no-op. Credentials NEVER pass to the
+// seam: only the auth-method label, the post-success user id (as the
+// public-facing subject), and policy vocabulary (action, resource).
+const observability = @import("observability");
 
 /// Token ID size in bytes.
 pub const TOKEN_ID_SIZE: usize = 16;
@@ -80,6 +85,10 @@ pub const ApiKeyManager = struct {
 
     /// Create a new API key for a user.
     /// Returns the full key string (only time secret is available).
+    ///
+    /// Telemetry: emits one `auth.api_key.issue` span. Subject id is
+    /// the issuing `user_id` (always known on this call site). The raw
+    /// key string and secret NEVER appear as span attributes.
     pub fn createKey(
         self: *Self,
         user_id: u64,
@@ -87,6 +96,12 @@ pub const ApiKeyManager = struct {
         scopes: []const []const u8,
         expires_in_seconds: ?i64,
     ) ![]u8 {
+        const span = observability.startAuthnSpan("api_key.issue");
+        var ok: bool = false;
+        var subject_buf: [32]u8 = undefined;
+        const subject_id: []const u8 = std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch "";
+        defer observability.endAuthnSpan(span, ok, if (ok) subject_id else null);
+
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
@@ -131,12 +146,29 @@ pub const ApiKeyManager = struct {
 
         try self.keys.put(id, key);
 
+        ok = true;
         return key_string;
     }
 
     /// Validate an API key and return a copy of the associated key info.
     /// Returns `null` if the key is invalid, expired, revoked, or has wrong prefix.
+    ///
+    /// Telemetry: emits one `auth.api_key` span per call. The span is
+    /// closed `.ok` with `enduser.id = <user_id>` when validation
+    /// succeeds and `.error_` (no subject id) on every failure path —
+    /// failed attempts are visible as security events without leaking
+    /// which subject they targeted. The raw key string and parsed
+    /// secret NEVER leave the function as span attributes.
     pub fn validateKey(self: *Self, key_string: []const u8) !?ApiKey {
+        const span = observability.startAuthnSpan("api_key");
+        // Default-fail unless the success path explicitly flips `ok`.
+        // `defer endAuthnSpan` runs once on every exit (including error
+        // returns from `parseApiKey`) so the span is always closed.
+        var ok: bool = false;
+        var subject_buf: [32]u8 = undefined;
+        var subject_id: ?[]const u8 = null;
+        defer observability.endAuthnSpan(span, ok, subject_id);
+
         var parsed = try parseApiKey(key_string);
         defer crypto.secureZero(u8, &parsed.secret);
 
@@ -168,13 +200,34 @@ pub const ApiKeyManager = struct {
         }
 
         key.last_used_at = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
+
+        // Success: stringify the user_id for the span attribute. Render
+        // into the local stack buffer so the slice the seam captures
+        // outlives only the span's `setStringAttribute` call (which
+        // dupes into the span's arena under enabled mode, and is a
+        // comptime no-op under disabled mode).
+        const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
+        if (sid) |s| subject_id = s;
+        ok = true;
         return key.*;
     }
 
     /// Check if a key has a specific scope.
+    ///
+    /// Telemetry: emits one `authz.{scope}` span per call. Recorded
+    /// regardless of result so denied checks are visible to forensics
+    /// auditors. Resource attribute is the literal string `"api_key"`
+    /// (the policy-vocabulary identifier for "this key's scope set"),
+    /// never the secret_hash or any field of the ApiKey beyond the
+    /// scope string itself.
     pub fn hasScope(key: *const ApiKey, scope: []const u8) bool {
+        const span = observability.startAuthzSpan(scope, "api_key");
+        var allowed: bool = false;
+        defer observability.endAuthzSpan(span, allowed);
+
         for (key.scopes) |s| {
             if (std.mem.eql(u8, s, scope) or std.mem.eql(u8, s, "*")) {
+                allowed = true;
                 return true;
             }
         }
@@ -182,19 +235,45 @@ pub const ApiKeyManager = struct {
     }
 
     /// Revoke an API key by ID.
+    ///
+    /// Telemetry: emits one `auth.api_key.revoke` span. Subject id is
+    /// the revoked key's user_id when the key was found; otherwise
+    /// null (revoke-of-unknown is treated as a failed revoke, surfaced
+    /// as `.error_` so operators can spot probing attempts).
     pub fn revokeKey(self: *Self, id: [TOKEN_ID_SIZE]u8) bool {
+        const span = observability.startAuthnSpan("api_key.revoke");
+        var ok: bool = false;
+        var subject_buf: [32]u8 = undefined;
+        var subject_id: ?[]const u8 = null;
+        defer observability.endAuthnSpan(span, ok, subject_id);
+
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
         if (self.keys.getPtr(id)) |key| {
             key.is_active = false;
+            const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
+            if (sid) |s| subject_id = s;
+            ok = true;
             return true;
         }
         return false;
     }
 
     /// Revoke all keys for a user.
+    ///
+    /// Telemetry: emits one `auth.api_key.revoke_all` span. Subject id
+    /// is the targeted user_id (always known on this call site). Span
+    /// is `.ok` even when zero keys were affected — the operator
+    /// performed an authorized bulk-revoke; the count of affected keys
+    /// is a side-effect, not a failure mode.
     pub fn revokeUserKeys(self: *Self, user_id: u64) usize {
+        const span = observability.startAuthnSpan("api_key.revoke_all");
+        var ok: bool = false;
+        var subject_buf: [32]u8 = undefined;
+        const subject_id: []const u8 = std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch "";
+        defer observability.endAuthnSpan(span, ok, if (ok) subject_id else null);
+
         self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
 
@@ -206,6 +285,7 @@ pub const ApiKeyManager = struct {
                 count += 1;
             }
         }
+        ok = true;
         return count;
     }
 
