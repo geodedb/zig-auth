@@ -77,6 +77,75 @@ make dev
 make ci
 ```
 
+## Observability
+
+`auth` ships an opt-in OpenTelemetry seam. Every public authn/authz
+entry point is wrapped in a span:
+
+- `auth.api_key` — emitted by `ApiKeyManager.validateKey`. On success
+  the span is closed `.ok` with `enduser.id = <user_id>`. On failure
+  (unknown key, wrong secret, expired, revoked, prefix mismatch) the
+  span closes `.error_` with NO subject id attached, so failed
+  attempts cannot be correlated to a known subject through tracing
+  alone.
+- `auth.api_key.issue` — emitted by `ApiKeyManager.createKey`.
+- `auth.api_key.revoke` / `auth.api_key.revoke_all` — emitted by the
+  revocation entry points. Revoke-of-unknown-id surfaces as `.error_`
+  to highlight probing.
+- `auth.mfa.enroll` — emitted by `mfa.enroll`. Subject id on success
+  is the enrolling username (the public identifier).
+- `auth.mfa` — emitted by `mfa.verifyCode`. Span status only
+  (`.ok`/`.error_`); no subject id is attached because `verifyCode`
+  receives the secret blob and code with no caller identity in scope.
+- `authz.{scope}` — emitted by `ApiKeyManager.hasScope`. Both granted
+  and denied checks are recorded for forensic auditing.
+
+Span attributes carry only the post-success subject id, the auth
+method label (`"password"`, `"token"`, `"mfa"`, `"api_key"`), and
+policy vocabulary (action, resource). Raw passwords, tokens, API key
+strings, password hashes, and TOTP secrets/codes are NEVER attached
+as attributes — the seam's API contract refuses to accept them.
+otel's redaction list is a backstop, not the primary defense.
+
+The instrumentation is gated behind `-Dwith_otel`:
+
+```bash
+# Default — otel dependency is never resolved, the seam compiles to
+# a comptime-known no-op, and the produced artifacts contain zero
+# otel symbols (verified by otel/scripts/verify-consumer-noop.sh).
+zig build
+
+# Enabled — every entry point emits a span via the otel SDK.
+zig build -Dwith_otel=true
+```
+
+When `-Dwith_otel=true`, configure the exporter via `OTEL_*`
+environment variables (default: OTLP/HTTP to `http://localhost:4318`,
+parent-based ratio sampler at 5%). Bootstrap from `main()`:
+
+```zig
+const auth = @import("auth");
+
+pub fn main() !void {
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    // Hold the Otel value at a stable address; the seam stores
+    // pointers into its tracer/meter fields.
+    if (auth.observability.enabled) {
+        var otel = try auth.observability_init.Otel.init(alloc, "my-service");
+        defer otel.deinit();
+        otel.installGlobals();
+    }
+
+    // ... auth calls now emit spans automatically.
+}
+```
+
+For full integration details, see the rollout recipe at
+`otel/docs/integration/RECIPE.md`.
+
 ## Documentation
 
 See the [docs](docs/) directory for detailed documentation.
