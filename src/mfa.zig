@@ -11,6 +11,7 @@
 //! in `MfaConfig` only for testing — never in production.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 const HmacSha1 = std.crypto.auth.hmac.HmacSha1;
@@ -32,8 +33,9 @@ pub const MfaConfig = struct {
     window: i32 = 1,
     /// Number of scratch/recovery codes to generate on enrollment.
     scratch_code_count: usize = 2,
-    /// If true, derive the secret deterministically from username + salt
-    /// (for testing only). If false (default), generate a random secret.
+    /// TEST-ONLY: derive the secret deterministically from username +
+    /// salt. Returns `error.DeterministicModeIsTestOnly` in non-test
+    /// builds — this switch cannot be enabled in production.
     deterministic: bool = false,
     /// Salt for deterministic derivation. Ignored when `deterministic` is false.
     salt: []const u8 = "auth-mfa-salt-v1",
@@ -196,6 +198,10 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
     const secret = try allocator.alloc(u8, 20);
     errdefer allocator.free(secret);
     if (config.deterministic) {
+        // Deterministic secrets are derivable by anyone who knows the
+        // username + salt. Physically unreachable outside `zig test`
+        // builds: misuse in production would destroy MFA for all users.
+        if (comptime !builtin.is_test) return error.DeterministicModeIsTestOnly;
         var prk = HkdfSha256.extract(config.salt, username);
         defer crypto.secureZero(u8, &prk);
         HkdfSha256.expand(secret[0..20], "totp-secret-v1", prk);
