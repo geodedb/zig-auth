@@ -553,11 +553,10 @@ test "verifyCode rejects wrong code" {
     defer enrollment.deinit(allocator);
 
     const ts: u64 = 1_700_000_000_000;
-    const valid = try verifyCode(allocator, enrollment.secret_base32, ts, 999999, cfg);
     const real_code = try generateCode(allocator, enrollment.secret_base32, ts, cfg);
-    if (real_code != 999999) {
-        try std.testing.expect(!valid);
-    }
+    // A code derived from the real one is guaranteed different.
+    const wrong_code = (real_code + 1) % 1_000_000;
+    try std.testing.expect(!try verifyCode(allocator, enrollment.secret_base32, ts, wrong_code, cfg));
 }
 
 test "verifyCode accepts code within time window" {
