@@ -234,10 +234,10 @@ test "adversarial: TOTP replay rejected via verifyCodeOnce across logins" {
     var last_step: u64 = 0;
     try std.testing.expect(try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_step, .{}));
     try std.testing.expect(!try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_step, .{}));
-    // The NEXT step's code is accepted.
+    // The NEXT step's code is accepted unconditionally: replay tracking
+    // is step-based, so even a value collision with the prior code is
+    // accepted at the new step.
     const ts2 = ts + 30_000;
     const code2 = try auth.mfa.generateCode(allocator, e.secret_base32, ts2, .{});
-    if (code2 != code) {
-        try std.testing.expect(try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts2, code2, &last_step, .{}));
-    }
+    try std.testing.expect(try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts2, code2, &last_step, .{}));
 }

@@ -84,6 +84,9 @@ pub const Enrollment = struct {
     }
 };
 
+/// Raw byte length of a standard TOTP secret (RFC 4226/6238: 160-bit).
+pub const TOTP_SECRET_RAW_LEN: usize = 20;
+
 /// Raw entropy per scratch code: 20 bytes = 160 bits.
 pub const SCRATCH_CODE_RAW_LEN: usize = 20;
 /// Encoded scratch-code length: 20 raw bytes -> 32 base32 chars.
@@ -239,11 +242,50 @@ fn base32DecodeInto(out: []u8, encoded: []const u8) error{InvalidBase32}!void {
     }
 }
 
+/// Decoded-secret holder for the TOTP hot paths: standard secrets
+/// (<= `max_stack` raw bytes) decode into the inline buffer with zero
+/// heap traffic; larger secrets fall back to the allocator.
+const DecodedSecret = struct {
+    const max_stack = 64;
+    stack: [max_stack]u8 = undefined,
+    heap: ?[]u8 = null,
+    len: usize = 0,
+
+    fn slice(self: *DecodedSecret) []u8 {
+        return if (self.heap) |b| b else self.stack[0..self.len];
+    }
+
+    fn deinit(self: *DecodedSecret, allocator: Allocator) void {
+        crypto.secureZero(u8, self.slice());
+        if (self.heap) |b| allocator.free(b);
+    }
+};
+
+/// Decode a (possibly padded) base32 secret for the TOTP hot paths.
+/// The result is returned by value; call `slice()`/`deinit()` only on
+/// the caller's local copy so the stack buffer it derives from is the
+/// live one.
+fn decodeSecret(allocator: Allocator, secret_base32: []const u8) (Allocator.Error || error{InvalidBase32})!DecodedSecret {
+    var data_len = secret_base32.len;
+    while (data_len > 0 and secret_base32[data_len - 1] == '=') data_len -= 1;
+    const decoded_len = try base32DecodedLen(data_len);
+    var out: DecodedSecret = .{ .len = decoded_len };
+    if (decoded_len <= DecodedSecret.max_stack) {
+        try base32DecodeInto(out.stack[0..decoded_len], secret_base32[0..data_len]);
+    } else {
+        const b = try allocator.alloc(u8, decoded_len);
+        errdefer allocator.free(b);
+        try base32DecodeInto(b, secret_base32[0..data_len]);
+        out.heap = b;
+    }
+    return out;
+}
+
 /// Generate a 20-byte TOTP secret.
 /// If `config.deterministic` is true, derives from username + salt (testing only).
 /// Otherwise generates a cryptographically random secret.
 fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig) ![]u8 {
-    const secret = try allocator.alloc(u8, 20);
+    const secret = try allocator.alloc(u8, TOTP_SECRET_RAW_LEN);
     errdefer allocator.free(secret);
     if (config.deterministic) {
         // Deterministic secrets are derivable by anyone who knows the
@@ -252,7 +294,7 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
         if (comptime !builtin.is_test) return error.DeterministicModeIsTestOnly;
         var prk = HkdfSha256.extract(config.salt, username);
         defer crypto.secureZero(u8, &prk);
-        HkdfSha256.expand(secret[0..20], "totp-secret-v1", prk);
+        HkdfSha256.expand(secret[0..TOTP_SECRET_RAW_LEN], "totp-secret-v1", prk);
     } else {
         // Fail closed: no silent low-entropy fallback on a credential path.
         try std.Io.Threaded.global_single_threaded.io().randomSecure(secret);
@@ -312,24 +354,11 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) Enr
 /// Generate a TOTP code from a Base32-encoded secret.
 pub fn generateCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, config: MfaConfig) VerifyError!u32 {
     try config.validate();
-    // Hot path: decode the secret into a stack buffer (standard TOTP
-    // secrets are 20 bytes / 32 chars) — zero heap traffic per call.
-    var stack_buf: [64]u8 = undefined;
-    var data_len = secret_base32.len;
-    while (data_len > 0 and secret_base32[data_len - 1] == '=') data_len -= 1;
-    const decoded_len = try base32DecodedLen(data_len);
-    var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |b| allocator.free(b);
-    const secret_raw = if (decoded_len <= stack_buf.len) blk: {
-        try base32DecodeInto(stack_buf[0..decoded_len], secret_base32[0..data_len]);
-        break :blk stack_buf[0..decoded_len];
-    } else blk: {
-        const b = try allocator.alloc(u8, decoded_len);
-        heap_buf = b;
-        try base32DecodeInto(b, secret_base32[0..data_len]);
-        break :blk b;
-    };
-    defer crypto.secureZero(u8, secret_raw);
+    // Hot path: standard TOTP secrets decode into a stack buffer —
+    // zero heap traffic per call (heap fallback for oversized secrets).
+    var decoded = try decodeSecret(allocator, secret_base32);
+    defer decoded.deinit(allocator);
+    const secret_raw = decoded.slice();
     return generateCodeFromRaw(secret_raw, timestamp_ms, config);
 }
 
@@ -373,25 +402,12 @@ pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp
     var ok: bool = false;
     defer observability.endAuthnSpan(span, ok, null);
 
-    // Decode the secret once (not per-iteration).
-    // Hot path: decode the secret into a stack buffer (standard TOTP
-    // secrets are 20 bytes / 32 chars) — zero heap traffic per call.
-    var stack_buf: [64]u8 = undefined;
-    var data_len = secret_base32.len;
-    while (data_len > 0 and secret_base32[data_len - 1] == '=') data_len -= 1;
-    const decoded_len = try base32DecodedLen(data_len);
-    var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |b| allocator.free(b);
-    const secret_raw = if (decoded_len <= stack_buf.len) blk: {
-        try base32DecodeInto(stack_buf[0..decoded_len], secret_base32[0..data_len]);
-        break :blk stack_buf[0..decoded_len];
-    } else blk: {
-        const b = try allocator.alloc(u8, decoded_len);
-        heap_buf = b;
-        try base32DecodeInto(b, secret_base32[0..data_len]);
-        break :blk b;
-    };
-    defer crypto.secureZero(u8, secret_raw);
+    // Decode the secret once (not per-iteration). Hot path: standard
+    // TOTP secrets decode into a stack buffer — zero heap traffic per
+    // call (heap fallback for oversized secrets).
+    var decoded = try decodeSecret(allocator, secret_base32);
+    defer decoded.deinit(allocator);
+    const secret_raw = decoded.slice();
 
     // Convert the provided code to bytes for constant-time comparison.
     const code_bytes = std.mem.toBytes(code);
