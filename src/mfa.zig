@@ -123,11 +123,9 @@ const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /// single indexed load (digits are validated to 6..9).
 const POW10 = [_]u32{ 1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000 };
 
-/// Encode raw bytes to Base32 (RFC 4648, no padding).
-/// Output length is always `((raw.len + 4) / 5) * 8`. For inputs whose
-/// length is not a multiple of 5, trailing encoded characters represent
-/// zero-padded bits.
-pub fn base32Encode(allocator: Allocator, raw: []const u8) ![]u8 {
+/// Encode raw bytes to Base32 per RFC 4648 Section 6, WITH '='
+/// padding to an 8-character block boundary.
+pub fn base32Encode(allocator: Allocator, raw: []const u8) Allocator.Error![]u8 {
     const out_len = ((raw.len + 4) / 5) * 8;
     const out = try allocator.alloc(u8, out_len);
     var bi: usize = 0;
@@ -139,40 +137,73 @@ pub fn base32Encode(allocator: Allocator, raw: []const u8) ![]u8 {
         const b2: u8 = if (remain > 2) raw[bi + 2] else 0;
         const b3: u8 = if (remain > 3) raw[bi + 3] else 0;
         const b4: u8 = if (remain > 4) raw[bi + 4] else 0;
-        out[oi + 0] = BASE32_ALPHABET[(b0 >> 3) & 0x1F];
-        out[oi + 1] = BASE32_ALPHABET[((b0 << 2) | (b1 >> 6)) & 0x1F];
-        out[oi + 2] = BASE32_ALPHABET[(b1 >> 1) & 0x1F];
-        out[oi + 3] = BASE32_ALPHABET[((b1 << 4) | (b2 >> 4)) & 0x1F];
-        out[oi + 4] = BASE32_ALPHABET[((b2 << 1) | (b3 >> 7)) & 0x1F];
-        out[oi + 5] = BASE32_ALPHABET[(b3 >> 2) & 0x1F];
-        out[oi + 6] = BASE32_ALPHABET[((b3 << 3) | (b4 >> 5)) & 0x1F];
-        out[oi + 7] = BASE32_ALPHABET[b4 & 0x1F];
+        var block: [8]u8 = undefined;
+        block[0] = BASE32_ALPHABET[(b0 >> 3) & 0x1F];
+        block[1] = BASE32_ALPHABET[((b0 << 2) | (b1 >> 6)) & 0x1F];
+        block[2] = BASE32_ALPHABET[(b1 >> 1) & 0x1F];
+        block[3] = BASE32_ALPHABET[((b1 << 4) | (b2 >> 4)) & 0x1F];
+        block[4] = BASE32_ALPHABET[((b2 << 1) | (b3 >> 7)) & 0x1F];
+        block[5] = BASE32_ALPHABET[(b3 >> 2) & 0x1F];
+        block[6] = BASE32_ALPHABET[((b3 << 3) | (b4 >> 5)) & 0x1F];
+        block[7] = BASE32_ALPHABET[b4 & 0x1F];
+        // RFC 4648: number of data chars per trailing-byte count.
+        const data_chars: usize = switch (remain) {
+            1 => 2,
+            2 => 4,
+            3 => 5,
+            4 => 7,
+            else => 8,
+        };
+        @memcpy(out[oi..][0..data_chars], block[0..data_chars]);
+        @memset(out[oi + data_chars ..][0..(8 - data_chars)], '=');
         bi += 5;
         oi += 8;
     }
     return out;
 }
 
-/// Decode Base32 (RFC 4648, no padding) to raw bytes.
-pub fn base32Decode(allocator: Allocator, encoded: []const u8) ![]u8 {
-    if (encoded.len % 8 != 0) return error.InvalidBase32;
-    const out_len = (encoded.len / 8) * 5;
+/// Decode Base32 (RFC 4648) to raw bytes. Accepts both padded and
+/// unpadded input; returns exactly the original byte length.
+pub fn base32Decode(allocator: Allocator, encoded: []const u8) (Allocator.Error || error{InvalidBase32})![]u8 {
+    // Strip trailing padding.
+    var data_len = encoded.len;
+    while (data_len > 0 and encoded[data_len - 1] == '=') data_len -= 1;
+    const data = encoded[0..data_len];
+
+    const out_len = try base32DecodedLen(data.len);
     const out = try allocator.alloc(u8, out_len);
     errdefer allocator.free(out);
-    base32DecodeInto(out, encoded) catch return error.InvalidBase32;
+    try base32DecodeInto(out, data);
     return out;
 }
 
-/// Decode Base32 into a caller-provided buffer (no allocation).
-fn base32DecodeInto(out: []u8, encoded: []const u8) !void {
-    if (encoded.len % 8 != 0) return error.InvalidBase32;
-    const expected_len = (encoded.len / 8) * 5;
-    if (out.len < expected_len) return error.InvalidBase32;
+/// Exact decoded byte length for an UNPADDED base32 char count.
+/// Rejects char counts that base32 cannot produce (1, 3, 6 mod 8).
+fn base32DecodedLen(data_chars: usize) error{InvalidBase32}!usize {
+    const rem = data_chars % 8;
+    const bytes_for_rem: usize = switch (rem) {
+        0 => 0,
+        2 => 1,
+        4 => 2,
+        5 => 3,
+        7 => 4,
+        else => return error.InvalidBase32,
+    };
+    return (data_chars / 8) * 5 + bytes_for_rem;
+}
+
+/// Decode UNPADDED Base32 into a caller-provided buffer (no allocation).
+/// `out.len` must be at least `base32DecodedLen(encoded.len)`.
+fn base32DecodeInto(out: []u8, encoded: []const u8) error{InvalidBase32}!void {
+    const out_len = try base32DecodedLen(encoded.len);
+    if (out.len < out_len) return error.InvalidBase32;
+
     var ei: usize = 0;
     var oi: usize = 0;
-    while (ei < encoded.len) : (ei += 8) {
-        var vals: [8]u8 = undefined;
-        for (0..8) |j| {
+    while (ei < encoded.len) {
+        const chunk = @min(encoded.len - ei, 8);
+        var vals = [_]u8{0} ** 8;
+        for (0..chunk) |j| {
             const c = encoded[ei + j];
             if (c >= 'A' and c <= 'Z') {
                 vals[j] = c - 'A';
@@ -182,12 +213,16 @@ fn base32DecodeInto(out: []u8, encoded: []const u8) !void {
                 return error.InvalidBase32;
             }
         }
-        out[oi + 0] = (vals[0] << 3) | (vals[1] >> 2);
-        out[oi + 1] = (vals[1] << 6) | (vals[2] << 1) | (vals[3] >> 4);
-        out[oi + 2] = (vals[3] << 4) | (vals[4] >> 1);
-        out[oi + 3] = (vals[4] << 7) | (vals[5] << 2) | (vals[6] >> 3);
-        out[oi + 4] = (vals[6] << 5) | vals[7];
-        oi += 5;
+        var block: [5]u8 = undefined;
+        block[0] = (vals[0] << 3) | (vals[1] >> 2);
+        block[1] = (vals[1] << 6) | (vals[2] << 1) | (vals[3] >> 4);
+        block[2] = (vals[3] << 4) | (vals[4] >> 1);
+        block[3] = (vals[4] << 7) | (vals[5] << 2) | (vals[6] >> 3);
+        block[4] = (vals[6] << 5) | vals[7];
+        const bytes = @min(out_len - oi, 5);
+        @memcpy(out[oi..][0..bytes], block[0..bytes]);
+        ei += chunk;
+        oi += bytes;
     }
 }
 
@@ -370,13 +405,12 @@ fn deterministicConfig() MfaConfig {
 
 test "base32 round-trip" {
     const allocator = std.testing.allocator;
-    const raw = "Hello, World!!!!"; // 16 bytes, not divisible by 5 — tests padding
+    const raw = "Hello, World!!!!"; // 16 bytes, not divisible by 5
     const encoded = try base32Encode(allocator, raw);
     defer allocator.free(encoded);
     const decoded = try base32Decode(allocator, encoded);
     defer allocator.free(decoded);
-    // Decoded may have trailing zero-padding from block alignment.
-    try std.testing.expectEqualSlices(u8, raw, decoded[0..raw.len]);
+    try std.testing.expectEqualSlices(u8, raw, decoded);
 }
 
 test "base32Decode rejects invalid characters" {
@@ -385,10 +419,12 @@ test "base32Decode rejects invalid characters" {
     try std.testing.expectError(error.InvalidBase32, result);
 }
 
-test "base32Decode rejects non-block-aligned input" {
+test "base32Decode accepts valid non-block lengths, rejects impossible ones" {
     const allocator = std.testing.allocator;
-    const result = base32Decode(allocator, "ABCDE");
-    try std.testing.expectError(error.InvalidBase32, result);
+    const ok = try base32Decode(allocator, "ABCDE"); // 5 chars -> 3 bytes
+    defer allocator.free(ok);
+    try std.testing.expectEqual(@as(usize, 3), ok.len);
+    try std.testing.expectError(error.InvalidBase32, base32Decode(allocator, "ABCDEF")); // 6 chars impossible
 }
 
 test "enroll produces Base32 secret and scratch codes" {
@@ -508,27 +544,50 @@ test "enroll with custom scratch code count" {
     try std.testing.expectEqual(@as(usize, 5), enrollment.scratch_codes.len);
 }
 
-test "base32 RFC 4648 test vectors (mod-5 inputs)" {
+test "base32 RFC 4648 Section 10 test vectors — all 7, encode and decode" {
     const allocator = std.testing.allocator;
-
-    // RFC 4648 Section 10 test vectors (only mod-5 lengths for exact round-trip).
     const vectors = [_]struct { raw: []const u8, encoded: []const u8 }{
+        .{ .raw = "", .encoded = "" },
+        .{ .raw = "f", .encoded = "MY======" },
+        .{ .raw = "fo", .encoded = "MZXQ====" },
+        .{ .raw = "foo", .encoded = "MZXW6===" },
+        .{ .raw = "foob", .encoded = "MZXW6YQ=" },
         .{ .raw = "fooba", .encoded = "MZXW6YTB" },
         .{ .raw = "foobar", .encoded = "MZXW6YTBOI======" },
     };
-
-    // For mod-5 lengths, our no-padding encoder produces exact round-trips.
     for (vectors) |v| {
-        if (v.raw.len % 5 == 0) {
-            const encoded = try base32Encode(allocator, v.raw);
-            defer allocator.free(encoded);
-            try std.testing.expectEqualSlices(u8, v.encoded[0..encoded.len], encoded);
+        const encoded = try base32Encode(allocator, v.raw);
+        defer allocator.free(encoded);
+        try std.testing.expectEqualSlices(u8, v.encoded, encoded);
 
-            const decoded = try base32Decode(allocator, encoded);
-            defer allocator.free(decoded);
-            try std.testing.expectEqualSlices(u8, v.raw, decoded);
-        }
+        const decoded = try base32Decode(allocator, v.encoded);
+        defer allocator.free(decoded);
+        try std.testing.expectEqualSlices(u8, v.raw, decoded);
     }
+}
+
+test "base32Decode accepts unpadded input and returns exact length" {
+    const allocator = std.testing.allocator;
+    const decoded = try base32Decode(allocator, "MZXW6YQ"); // "foob" without padding
+    defer allocator.free(decoded);
+    try std.testing.expectEqualSlices(u8, "foob", decoded);
+}
+
+test "base32Decode rejects invalid lengths and misplaced padding" {
+    const allocator = std.testing.allocator;
+    // 1, 3, 6 chars (mod 8) are not producible by base32.
+    try std.testing.expectError(error.InvalidBase32, base32Decode(allocator, "M"));
+    try std.testing.expectError(error.InvalidBase32, base32Decode(allocator, "MZX"));
+    try std.testing.expectError(error.InvalidBase32, base32Decode(allocator, "MZXW6Y"));
+    // Padding in the middle is invalid.
+    try std.testing.expectError(error.InvalidBase32, base32Decode(allocator, "M=XW6YTB"));
+}
+
+test "base32Decode empty input returns empty slice" {
+    const allocator = std.testing.allocator;
+    const decoded = try base32Decode(allocator, "");
+    defer allocator.free(decoded);
+    try std.testing.expectEqual(@as(usize, 0), decoded.len);
 }
 
 test "MfaConfig validation rejects digits=0 (silent MFA bypass)" {
