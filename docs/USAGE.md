@@ -27,7 +27,14 @@ Every key string has three dot-separated fields:
 - `secret_b64url` — 32 random bytes, base64url encoded without padding (43 chars).
 
 The secret is shown exactly once (returned by `createKey`) and is never stored
-in plain form. Only an HMAC-SHA256 (or peppered variant) hash is retained.
+in plain form. Only a one-way hash is retained — **bare SHA-256 by default**
+(safe because the secret is a full 32-byte CSPRNG value), or
+**HMAC-SHA256(pepper, secret)** when `Config.pepper` is set. Set a pepper for
+defense-in-depth against key-store disclosure.
+
+> Packaging note: the published Zig package ships `src/` and build files only;
+> the `tests/`, `examples/`, and `docs/` trees are repo-only (clone the repo to
+> run the test or example suites).
 
 ### Config fields
 
