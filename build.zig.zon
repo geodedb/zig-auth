@@ -1,6 +1,6 @@
 .{
     .name = .auth,
-    .version = "0.1.5",
+    .version = "0.1.7",
     .fingerprint = 0xf8deb0596799be5b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

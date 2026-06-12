@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-12
+
 ### Added
 
 - Working basic example wired into `zig build example`
@@ -92,7 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Zig 0.16.0 compatibility (`Thread.Mutex` → `Io.Mutex`, `Mutex.lock`/`init` API updates)
 
-[Unreleased]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.6...HEAD
+[Unreleased]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.7...HEAD
+[0.1.7]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.6...v0.1.7
 [0.1.6]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.5...v0.1.6
 [0.1.5]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.4...v0.1.5
 [0.1.4]: https://gitlab.com/devnw/zig/auth/-/compare/v0.1.3...v0.1.4

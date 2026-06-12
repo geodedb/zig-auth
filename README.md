@@ -23,7 +23,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .auth = .{
-        .url = "https://gitlab.com/devnw/zig/auth/-/archive/v0.1.5/auth-v0.1.5.tar.gz",
+        .url = "https://gitlab.com/devnw/zig/auth/-/archive/v0.1.7/auth-v0.1.7.tar.gz",
         .hash = "...",
     },
 },
