@@ -84,6 +84,14 @@ pub const Otel = struct {
     /// and publish their addresses to `observability.global`. MUST be
     /// called against a `*@This()` whose backing storage outlives every
     /// span site.
+    /// SAFETY CONTRACT (GAP-0035, gitlab issue #79): `installGlobals`
+    /// publishes raw pointers into process-global state with NO
+    /// synchronization. The caller MUST (1) keep `self` at a stable
+    /// address that outlives every span site, (2) call this ONCE,
+    /// before any thread can start a span, and (3) call `deinit` only
+    /// after all span activity has quiesced. Violating any of these is
+    /// a use-after-free / data race. Revisit with atomic publication
+    /// when the seam is re-enabled (GAP-0020).
     pub fn installGlobals(self: *@This()) void {
         self.tracer = self.tracer_provider.tracer(.{ .name = self.service_name });
         self.meter = self.meter_provider.meter(.{ .name = self.service_name });

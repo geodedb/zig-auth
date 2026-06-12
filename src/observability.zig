@@ -41,6 +41,10 @@ const std = @import("std");
 // seam is preserved as a permanent no-op for forward-compat;
 // restore the conditional once the upstream Zig dedup issue is
 // resolved.
+// TRACKING: GAP-0020 (gitlab issue #66). While this constant is false,
+// consumers get ZERO auth security events even with -Dwith_otel=true —
+// add application-level logging around auth calls until the seam is
+// restored. The -Dwith_otel build still type-checks the otel wiring.
 pub const enabled: bool = false;
 
 const otel = struct {};

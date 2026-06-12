@@ -23,9 +23,12 @@ test "build_options.with_otel exists and defaults to false" {
     try std.testing.expectEqual(false, build_options.with_otel);
 }
 
-test "observability.enabled tracks build_options.with_otel" {
-    const build_options = @import("build_options");
-    try std.testing.expectEqual(build_options.with_otel, auth.observability.enabled);
+test "observability.enabled is hardcoded false (GAP-0020: seam inert until upstream Zig dedup fix)" {
+    // 2026-05-02 workaround: observability.zig hardcodes enabled=false
+    // regardless of -Dwith_otel. When the seam is restored to
+    // `enabled = build_options.with_otel`, flip this assertion back to
+    // expectEqual(build_options.with_otel, auth.observability.enabled).
+    try std.testing.expectEqual(false, auth.observability.enabled);
 }
 
 test "client/server seams are no-ops when otel disabled" {
