@@ -57,6 +57,8 @@ const enrollment = try auth.mfa.enroll(allocator, "alice", .{});
 defer enrollment.deinit(allocator);
 ```
 
+See [docs/USAGE.md](docs/USAGE.md) for the full usage guide.
+
 ## Requirements
 
 - Zig 0.15.1 or later

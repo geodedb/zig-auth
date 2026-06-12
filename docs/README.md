@@ -4,6 +4,7 @@ Reusable authentication primitives for Zig applications.
 
 ## Contents
 
+- [Usage Guide](USAGE.md) -- token format, HMAC chains, MFA configuration
 - [Requirements](REQUIREMENTS.md) -- Functional, packaging, and test requirements
 - [Gap Analysis](GAP_ANALYSIS.md) -- Open gaps and requirements tracker
 - [Resolved Gaps](GAP_ANALYSIS_RESOLVED.md) -- Closed gaps with evidence
