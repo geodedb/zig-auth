@@ -59,7 +59,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Set, Tuple
 
 # build.zig.zon parsing — Zig anonymous-struct literals.
@@ -192,9 +192,9 @@ def collect_transitive(
     project_root = root_zon.parent
     result: Dict[str, Set[Tuple[str, str | None]]] = defaultdict(set)
     seen_hashes: Set[str] = set()
-    queue: List[Path] = [root_zon]
+    queue: deque[Path] = deque([root_zon])
     while queue:
-        zon_path = queue.pop(0)
+        zon_path = queue.popleft()
         try:
             text = zon_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
