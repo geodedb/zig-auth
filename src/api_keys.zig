@@ -108,8 +108,9 @@ pub const ApiKeyManager = struct {
         // Generate cryptographically random token ID and secret.
         var id: [TOKEN_ID_SIZE]u8 = undefined;
         var secret: [SECRET_SIZE]u8 = undefined;
-        std.Io.Threaded.global_single_threaded.io().random(&id);
-        std.Io.Threaded.global_single_threaded.io().random(&secret);
+        // Fail closed: no silent low-entropy fallback on a credential path.
+        try std.Io.Threaded.global_single_threaded.io().randomSecure(&id);
+        try std.Io.Threaded.global_single_threaded.io().randomSecure(&secret);
 
         // Hash the secret for storage (never store raw secret).
         var secret_hash: [32]u8 = undefined;

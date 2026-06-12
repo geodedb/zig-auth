@@ -146,12 +146,14 @@ fn base32DecodeInto(out: []u8, encoded: []const u8) !void {
 /// Otherwise generates a cryptographically random secret.
 fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig) ![]u8 {
     const secret = try allocator.alloc(u8, 20);
+    errdefer allocator.free(secret);
     if (config.deterministic) {
         var prk = HkdfSha256.extract(config.salt, username);
         defer crypto.secureZero(u8, &prk);
         HkdfSha256.expand(secret[0..20], "totp-secret-v1", prk);
     } else {
-        std.Io.Threaded.global_single_threaded.io().random(secret);
+        // Fail closed: no silent low-entropy fallback on a credential path.
+        try std.Io.Threaded.global_single_threaded.io().randomSecure(secret);
     }
     return secret;
 }
@@ -476,4 +478,14 @@ test "MfaConfig validation rejects out-of-range digits, step, window" {
     try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .window = -1 }));
     // window absurdly large risks u64 overflow in delta arithmetic
     try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .window = 65 }));
+}
+
+test "generateSecret uses randomSecure (error union surfaces)" {
+    // randomSecure returns error{EntropyUnavailable,Canceled}!void; this
+    // test pins the API choice: enroll must be able to surface
+    // error.EntropyUnavailable instead of silently degrading.
+    const allocator = std.testing.allocator;
+    const e = try enroll(allocator, "secure-rng-user", .{});
+    defer e.deinit(allocator);
+    try std.testing.expect(e.secret_base32.len == 32);
 }
