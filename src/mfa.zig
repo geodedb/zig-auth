@@ -293,16 +293,20 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
     return bin_code % mod;
 }
 
-/// Verify a TOTP code against a Base32-encoded secret, checking within the
-/// configured time window to account for clock skew.
-/// Uses constant-time comparison to prevent timing side-channels.
+/// Verify a TOTP code and return the matched timestep on success
+/// (`null` on rejection). The returned step lets callers implement
+/// replay rejection: persist the last accepted step and reject any
+/// step <= it (see `verifyCodeOnce`). Constant-time comparison; the
+/// window loop never exits early, so timing does not reveal WHICH
+/// window position matched. If multiple window positions match, the
+/// HIGHEST step is returned (most conservative for replay tracking).
 ///
 /// Telemetry: emits one `auth.mfa` span per call. NO subject id is
-/// attached — `verifyCode` receives only the secret blob and code; it
-/// has no notion of who the verifier is. Span status: `.ok` on accept,
+/// attached — only the secret blob and code are received; there is no
+/// notion of who the verifier is. Span status: `.ok` on accept,
 /// `.error_` on reject. The secret_base32 and code values NEVER appear
 /// as span attributes.
-pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !bool {
+pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !?u64 {
     try config.validate();
     const span = observability.startAuthnSpan("mfa");
     var ok: bool = false;
@@ -317,7 +321,7 @@ pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms:
 
     // Convert the provided code to bytes for constant-time comparison.
     const code_bytes = std.mem.toBytes(code);
-    var match: bool = false;
+    var matched_step: ?u64 = null;
 
     var idx: i32 = -config.window;
     while (idx <= config.window) : (idx += 1) {
@@ -332,11 +336,30 @@ pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms:
         const candidate = generateCodeFromRaw(secret_raw, t, config);
         const candidate_bytes = std.mem.toBytes(candidate);
         if (std.crypto.timing_safe.eql([4]u8, code_bytes, candidate_bytes)) {
-            match = true;
+            matched_step = t / (config.step_seconds * 1000);
         }
     }
-    ok = match;
-    return match;
+    ok = matched_step != null;
+    return matched_step;
+}
+
+/// Verify a TOTP code (boolean form). Prefer `verifyCodeOnce` (or
+/// `verifyCodeStep` + your own persistence) in production: this form
+/// alone cannot reject replayed codes within the window.
+pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !bool {
+    return (try verifyCodeStep(allocator, secret_base32, timestamp_ms, code, config)) != null;
+}
+
+/// Verify a TOTP code with replay rejection. `last_used_step` is the
+/// caller-persisted high-water mark (use 0 for a fresh enrollment); a
+/// code is accepted only if its matched step is strictly greater, and
+/// the mark is advanced on acceptance. Callers must persist the
+/// updated value atomically with the login.
+pub fn verifyCodeOnce(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, last_used_step: *u64, config: MfaConfig) !bool {
+    const step = (try verifyCodeStep(allocator, secret_base32, timestamp_ms, code, config)) orelse return false;
+    if (step <= last_used_step.*) return false;
+    last_used_step.* = step;
+    return true;
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -580,4 +603,34 @@ test "verifyScratchCode: constant-time match, single-use consumption" {
 
     // Other codes still work.
     try std.testing.expectEqual(@as(?usize, 0), verifyScratchCode(&hashes, &consumed, e.scratch_codes[0]));
+}
+
+test "verifyCodeStep returns the matched timestep" {
+    const allocator = std.testing.allocator;
+    const cfg = deterministicConfig();
+    const e = try enroll(allocator, "step-user", cfg);
+    defer e.deinit(allocator);
+
+    const ts: u64 = 1_700_000_000_000;
+    const code = try generateCode(allocator, e.secret_base32, ts, cfg);
+    const step = try verifyCodeStep(allocator, e.secret_base32, ts, code, cfg);
+    try std.testing.expectEqual(@as(?u64, ts / (cfg.step_seconds * 1000)), step);
+
+    const bad = try verifyCodeStep(allocator, e.secret_base32, ts, code +% 1, cfg);
+    try std.testing.expectEqual(@as(?u64, null), bad);
+}
+
+test "verifyCodeOnce rejects replay of the same step" {
+    const allocator = std.testing.allocator;
+    const cfg = deterministicConfig();
+    const e = try enroll(allocator, "replay-user", cfg);
+    defer e.deinit(allocator);
+
+    const ts: u64 = 1_700_000_000_000;
+    const code = try generateCode(allocator, e.secret_base32, ts, cfg);
+
+    var last_used_step: u64 = 0;
+    try std.testing.expect(try verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_used_step, cfg));
+    // Replay: same code, same window — must be rejected.
+    try std.testing.expect(!try verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_used_step, cfg));
 }
