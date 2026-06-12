@@ -60,7 +60,10 @@ pub const Enrollment = struct {
     scratch_codes: [][]u8,
 
     pub fn deinit(self: *const Enrollment, allocator: Allocator) void {
-        for (self.scratch_codes) |code| allocator.free(code);
+        for (self.scratch_codes) |code| {
+            crypto.secureZero(u8, code);
+            allocator.free(code);
+        }
         allocator.free(self.scratch_codes);
         crypto.secureZero(u8, self.secret_base32);
         allocator.free(self.secret_base32);
