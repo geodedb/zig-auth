@@ -67,6 +67,39 @@ pub const Enrollment = struct {
     }
 };
 
+/// Raw entropy per scratch code: 20 bytes = 160 bits.
+pub const SCRATCH_CODE_RAW_LEN: usize = 20;
+/// Encoded scratch-code length: 20 raw bytes -> 32 base32 chars.
+pub const SCRATCH_CODE_LEN: usize = 32;
+
+/// Hash a scratch code for at-rest storage. Store ONLY these hashes;
+/// never persist plaintext recovery codes.
+pub fn hashScratchCode(code: []const u8) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(code, &out, .{});
+    return out;
+}
+
+/// Verify a presented recovery code against stored hashes, enforcing
+/// single use. Scans ALL hashes with constant-time comparison (no early
+/// exit) so timing does not reveal which slot matched. On match of an
+/// unconsumed slot, marks it consumed and returns its index; otherwise
+/// returns null. `hashes` and `consumed` must be the same length.
+pub fn verifyScratchCode(hashes: []const [32]u8, consumed: []bool, presented: []const u8) ?usize {
+    std.debug.assert(hashes.len == consumed.len);
+    var presented_hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(presented, &presented_hash, .{});
+    defer crypto.secureZero(u8, &presented_hash);
+
+    var matched: ?usize = null;
+    for (hashes, 0..) |h, i| {
+        const eq = std.crypto.timing_safe.eql([32]u8, presented_hash, h);
+        if (eq and !consumed[i] and matched == null) matched = i;
+    }
+    if (matched) |i| consumed[i] = true;
+    return matched;
+}
+
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 /// 10^n for n in 0..=9 — comptime table so the TOTP modulus is a
@@ -188,20 +221,15 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !En
         allocator.free(scodes);
     }
 
-    // Hoist HKDF extract outside the loop (salt + raw_secret are invariant).
-    var prk = HkdfSha256.extract(config.salt, raw_secret);
-    defer crypto.secureZero(u8, &prk);
-
+    // Scratch (recovery) codes are MFA-bypass credentials: generate each
+    // from the CSPRNG, INDEPENDENT of the TOTP secret, at 160 bits
+    // (20 random bytes -> 32 base32 chars). Store only hashes at rest
+    // (see `hashScratchCode` / `verifyScratchCode`).
     while (allocated < config.scratch_code_count) : (allocated += 1) {
-        const code = try allocator.alloc(u8, 8);
-        var scratch_bytes: [8]u8 = undefined;
-        defer crypto.secureZero(u8, &scratch_bytes);
-        var info_buf: [32]u8 = undefined;
-        const info = std.fmt.bufPrint(&info_buf, "scratch-code-{d}", .{allocated}) catch unreachable;
-        HkdfSha256.expand(&scratch_bytes, info, prk);
-        for (0..8) |j| {
-            code[j] = BASE32_ALPHABET[@as(usize, scratch_bytes[j] & 0x1F)];
-        }
+        var raw: [SCRATCH_CODE_RAW_LEN]u8 = undefined;
+        defer crypto.secureZero(u8, &raw);
+        try std.Io.Threaded.global_single_threaded.io().randomSecure(&raw);
+        const code = try base32Encode(allocator, &raw);
         scodes[allocated] = code;
     }
 
@@ -325,7 +353,7 @@ test "enroll produces Base32 secret and scratch codes" {
     try std.testing.expectEqual(@as(usize, 2), enrollment.scratch_codes.len);
 
     for (enrollment.scratch_codes) |code| {
-        try std.testing.expectEqual(@as(usize, 8), code.len);
+        try std.testing.expectEqual(@as(usize, 32), code.len);
         for (code) |c| {
             try std.testing.expect((c >= 'A' and c <= 'Z') or (c >= '2' and c <= '7'));
         }
@@ -480,12 +508,52 @@ test "MfaConfig validation rejects out-of-range digits, step, window" {
     try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .window = 65 }));
 }
 
-test "generateSecret uses randomSecure (error union surfaces)" {
-    // randomSecure returns error{EntropyUnavailable,Canceled}!void; this
-    // test pins the API choice: enroll must be able to surface
-    // error.EntropyUnavailable instead of silently degrading.
+test "enroll with default config produces 32-char base32 secret" {
+    // Exercises the non-deterministic path through randomSecure; error propagation is enforced by the type system (try in generateSecret).
     const allocator = std.testing.allocator;
     const e = try enroll(allocator, "secure-rng-user", .{});
     defer e.deinit(allocator);
     try std.testing.expect(e.secret_base32.len == 32);
+}
+
+test "scratch codes are 32 chars and independent of the TOTP secret" {
+    const allocator = std.testing.allocator;
+    const e1 = try enroll(allocator, "rc-user", .{});
+    defer e1.deinit(allocator);
+    for (e1.scratch_codes) |code| {
+        try std.testing.expectEqual(@as(usize, 32), code.len);
+        for (code) |c| try std.testing.expect((c >= 'A' and c <= 'Z') or (c >= '2' and c <= '7'));
+    }
+    // Deterministic enrollments must still produce DIFFERENT scratch codes
+    // (codes come from the CSPRNG, not from HKDF(secret)).
+    const cfg = MfaConfig{ .deterministic = true };
+    const e2 = try enroll(allocator, "rc-user2", cfg);
+    defer e2.deinit(allocator);
+    const e3 = try enroll(allocator, "rc-user2", cfg);
+    defer e3.deinit(allocator);
+    try std.testing.expect(!std.mem.eql(u8, e2.scratch_codes[0], e3.scratch_codes[0]));
+}
+
+test "verifyScratchCode: constant-time match, single-use consumption" {
+    const allocator = std.testing.allocator;
+    const e = try enroll(allocator, "rc-verify", .{ .scratch_code_count = 3 });
+    defer e.deinit(allocator);
+
+    var hashes: [3][32]u8 = undefined;
+    for (e.scratch_codes, 0..) |code, i| hashes[i] = hashScratchCode(code);
+    var consumed = [_]bool{ false, false, false };
+
+    // Correct code verifies and is consumed.
+    const idx = verifyScratchCode(&hashes, &consumed, e.scratch_codes[1]);
+    try std.testing.expectEqual(@as(?usize, 1), idx);
+    try std.testing.expect(consumed[1]);
+
+    // Same code again: rejected (single-use).
+    try std.testing.expectEqual(@as(?usize, null), verifyScratchCode(&hashes, &consumed, e.scratch_codes[1]));
+
+    // Wrong code: rejected.
+    try std.testing.expectEqual(@as(?usize, null), verifyScratchCode(&hashes, &consumed, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+
+    // Other codes still work.
+    try std.testing.expectEqual(@as(?usize, 0), verifyScratchCode(&hashes, &consumed, e.scratch_codes[0]));
 }
