@@ -77,6 +77,7 @@ test "integration: API key create, validate, revoke lifecycle" {
     defer allocator.free(key_string);
 
     const key = (try mgr.validateKey(key_string)).?;
+    defer mgr.freeValidatedKey(key);
     try std.testing.expectEqual(@as(u64, 42), key.user_id);
     try std.testing.expect(auth.api_keys.ApiKeyManager.hasScope(&key, "read"));
     try std.testing.expect(!auth.api_keys.ApiKeyManager.hasScope(&key, "admin"));
@@ -97,7 +98,9 @@ test "integration: API key with custom prefix" {
     defer allocator.free(key_string);
 
     try std.testing.expect(std.mem.startsWith(u8, key_string, "myapp2."));
-    try std.testing.expect((try mgr.validateKey(key_string)) != null);
+    if (try mgr.validateKey(key_string)) |k| {
+        mgr.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 }
 
 test "integration: Bearer token parsing feeds into validation" {
@@ -113,7 +116,9 @@ test "integration: Bearer token parsing feeds into validation" {
     defer allocator.free(header);
 
     const token = auth.api_keys.parseBearerToken(header).?;
-    try std.testing.expect((try mgr.validateKey(token)) != null);
+    if (try mgr.validateKey(token)) |k| {
+        mgr.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 }
 
 test "integration: listUserKeys returns owned copies" {

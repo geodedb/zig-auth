@@ -17,6 +17,29 @@ const Allocator = std.mem.Allocator;
 // public-facing subject), and policy vocabulary (action, resource).
 const observability = @import("observability");
 
+/// Single accessor for the process-global IO used for timestamps and
+/// CSPRNG. Centralized so a future injectable-clock refactor touches
+/// one site.
+inline fn ioh() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+/// Wall-clock seconds (UTC).
+fn nowSeconds() i64 {
+    return std.Io.Timestamp.now(ioh(), .real).toSeconds();
+}
+
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+
+/// Hash a raw secret for at-rest storage, peppered when configured.
+fn hashSecret(config: Config, secret: *const [SECRET_SIZE]u8, out: *[32]u8) void {
+    if (config.pepper) |p| {
+        HmacSha256.create(out, secret, p);
+    } else {
+        crypto.hash.sha2.Sha256.hash(secret, out, .{});
+    }
+}
+
 /// Token ID size in bytes.
 pub const TOKEN_ID_SIZE: usize = 16;
 
@@ -26,8 +49,19 @@ pub const SECRET_SIZE: usize = 32;
 /// Configuration for the API key system.
 pub const Config = struct {
     /// Version prefix for formatted key strings (e.g. "ak1", "myapp1").
-    /// Must not contain '.'.
+    /// Must not contain '.' — enforced by `createKey`
+    /// (`error.InvalidKeyPrefix`).
     key_prefix: []const u8 = "ak1",
+    /// Optional server-side pepper. When set, stored secret hashes are
+    /// `HMAC-SHA256(pepper, secret)` instead of bare SHA-256, so a
+    /// key-store disclosure alone is not matchable against captured
+    /// key strings. The pepper must live outside the key store and
+    /// outlive the manager. Changing it invalidates all stored keys.
+    pepper: ?*const [32]u8 = null,
+    /// Optional hard cap on stored keys. `createKey` returns
+    /// `error.KeyLimitReached` at the cap (DoS guard for unbounded
+    /// key-map growth).
+    max_keys: ?usize = null,
 };
 
 /// API Key structure (stored server-side; never contains the raw secret).
@@ -51,6 +85,24 @@ pub const ParsedApiKey = struct {
 };
 
 /// API Key Manager.
+///
+/// ## Threading
+/// All public methods are safe to call from multiple OS threads: a
+/// blocking `std.Io.Mutex` serializes every access to the key map.
+/// (Zig 0.16 moved the blocking mutex from `std.Thread.Mutex` to
+/// `std.Io.Mutex`; in normal multi-threaded builds its waits are real
+/// OS futex waits, so cross-thread contention blocks correctly.)
+///
+/// ## Ownership
+/// - The manager owns all stored key data (`name`/`scopes`), freed by
+///   `deinit`/`cleanupExpired`/`revoke*`.
+/// - `validateKey` returns an OWNED deep copy — release with
+///   `freeValidatedKey`.
+/// - `listUserKeys` returns owned deep copies allocated from the
+///   allocator argument — release with `freeKeyList`, passing the SAME
+///   allocator.
+/// - `createKey` returns an owned key string allocated from the
+///   manager's allocator — caller frees it.
 pub const ApiKeyManager = struct {
     const Self = @This();
 
@@ -69,8 +121,8 @@ pub const ApiKeyManager = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         var it = self.keys.iterator();
         while (it.next()) |entry| {
@@ -99,25 +151,30 @@ pub const ApiKeyManager = struct {
         const span = observability.startAuthnSpan("api_key.issue");
         var ok: bool = false;
         var subject_buf: [32]u8 = undefined;
-        const subject_id: []const u8 = std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch "";
+        const subject_id: []const u8 = if (comptime observability.enabled)
+            std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch ""
+        else
+            "";
         defer observability.endAuthnSpan(span, ok, if (ok) subject_id else null);
 
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        // Reject prefixes that would corrupt the '.'-delimited format.
+        if (std.mem.indexOfScalar(u8, self.config.key_prefix, '.') != null)
+            return error.InvalidKeyPrefix;
 
-        // Generate cryptographically random token ID and secret.
+        // Everything below until the lock is pure local work — RNG,
+        // hashing, formatting, and duplication happen OUTSIDE the
+        // critical section so concurrent validates are not stalled.
         var id: [TOKEN_ID_SIZE]u8 = undefined;
         var secret: [SECRET_SIZE]u8 = undefined;
         // Fail closed: no silent low-entropy fallback on a credential path.
-        try std.Io.Threaded.global_single_threaded.io().randomSecure(&id);
-        try std.Io.Threaded.global_single_threaded.io().randomSecure(&secret);
-
-        // Hash the secret for storage (never store raw secret).
-        var secret_hash: [32]u8 = undefined;
-        crypto.hash.sha2.Sha256.hash(&secret, &secret_hash, .{});
+        try ioh().randomSecure(&id);
+        try ioh().randomSecure(&secret);
         defer crypto.secureZero(u8, &secret);
 
-        const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
+        var secret_hash: [32]u8 = undefined;
+        hashSecret(self.config, &secret, &secret_hash);
+
+        const now = nowSeconds();
         const expires_at: ?i64 = if (expires_in_seconds) |exp| now + exp else null;
 
         // Format key string BEFORE inserting into map.
@@ -126,7 +183,6 @@ pub const ApiKeyManager = struct {
         const key_string = try formatApiKey(self.allocator, self.config.key_prefix, &id, &secret);
         errdefer self.allocator.free(key_string);
 
-        // Duplicate name and scopes.
         const name_dup = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_dup);
 
@@ -145,14 +201,29 @@ pub const ApiKeyManager = struct {
             .is_active = true,
         };
 
-        try self.keys.put(id, key);
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
+
+        if (self.config.max_keys) |limit| {
+            if (self.keys.count() >= limit) return error.KeyLimitReached;
+        }
+
+        // Collision-safe insert: a duplicate random ID must never
+        // silently overwrite (and leak) another user's key.
+        const gop = try self.keys.getOrPut(id);
+        if (gop.found_existing) return error.TokenIdCollision;
+        gop.value_ptr.* = key;
 
         ok = true;
         return key_string;
     }
 
-    /// Validate an API key and return a copy of the associated key info.
-    /// Returns `null` if the key is invalid, expired, revoked, or has wrong prefix.
+    /// Validate an API key and return an OWNED deep copy of the
+    /// associated key info — `name` and `scopes` are duplicated with
+    /// the manager's allocator and remain valid after concurrent
+    /// revoke/cleanup. Release with `freeValidatedKey`.
+    /// Returns `null` if the key is invalid, expired, revoked, or has
+    /// the wrong prefix.
     ///
     /// Telemetry: emits one `auth.api_key` span per call. The span is
     /// closed `.ok` with `enduser.id = <user_id>` when validation
@@ -162,9 +233,6 @@ pub const ApiKeyManager = struct {
     /// secret NEVER leave the function as span attributes.
     pub fn validateKey(self: *Self, key_string: []const u8) !?ApiKey {
         const span = observability.startAuthnSpan("api_key");
-        // Default-fail unless the success path explicitly flips `ok`.
-        // `defer endAuthnSpan` runs once on every exit (including error
-        // returns from `parseApiKey`) so the span is always closed.
         var ok: bool = false;
         var subject_buf: [32]u8 = undefined;
         var subject_id: ?[]const u8 = null;
@@ -179,18 +247,22 @@ pub const ApiKeyManager = struct {
         // Hash the provided secret BEFORE acquiring the lock to reduce
         // mutex hold time under concurrent validation.
         var provided_hash: [32]u8 = undefined;
-        crypto.hash.sha2.Sha256.hash(&parsed.secret, &provided_hash, .{});
+        hashSecret(self.config, &parsed.secret, &provided_hash);
         defer crypto.secureZero(u8, &provided_hash);
 
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        // One wall-clock read serves both the expiry check and the
+        // last_used_at update.
+        const now = nowSeconds();
+
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         const key = self.keys.getPtr(parsed.id) orelse return null;
 
         if (!key.is_active) return null;
 
         if (key.expires_at) |exp| {
-            if (std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds() >= exp) {
+            if (now >= exp) {
                 key.is_active = false;
                 return null;
             }
@@ -200,17 +272,25 @@ pub const ApiKeyManager = struct {
             return null;
         }
 
-        key.last_used_at = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
+        key.last_used_at = now;
 
-        // Success: stringify the user_id for the span attribute. Render
-        // into the local stack buffer so the slice the seam captures
-        // outlives only the span's `setStringAttribute` call (which
-        // dupes into the span's arena under enabled mode, and is a
-        // comptime no-op under disabled mode).
-        const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
-        if (sid) |s| subject_id = s;
+        var copy = key.*;
+        copy.name = try self.allocator.dupe(u8, key.name);
+        errdefer self.allocator.free(copy.name);
+        copy.scopes = try dupeScopes(self.allocator, key.scopes);
+
+        if (comptime observability.enabled) {
+            const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
+            if (sid) |s| subject_id = s;
+        }
         ok = true;
-        return key.*;
+        return copy;
+    }
+
+    /// Free a key returned by `validateKey`.
+    pub fn freeValidatedKey(self: *Self, key: ApiKey) void {
+        self.allocator.free(key.name);
+        freeScopes(self.allocator, key.scopes);
     }
 
     /// Check if a key has a specific scope.
@@ -248,13 +328,15 @@ pub const ApiKeyManager = struct {
         var subject_id: ?[]const u8 = null;
         defer observability.endAuthnSpan(span, ok, subject_id);
 
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         if (self.keys.getPtr(id)) |key| {
             key.is_active = false;
-            const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
-            if (sid) |s| subject_id = s;
+            if (comptime observability.enabled) {
+                const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
+                if (sid) |s| subject_id = s;
+            }
             ok = true;
             return true;
         }
@@ -272,11 +354,14 @@ pub const ApiKeyManager = struct {
         const span = observability.startAuthnSpan("api_key.revoke_all");
         var ok: bool = false;
         var subject_buf: [32]u8 = undefined;
-        const subject_id: []const u8 = std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch "";
+        const subject_id: []const u8 = if (comptime observability.enabled)
+            std.fmt.bufPrint(&subject_buf, "{d}", .{user_id}) catch ""
+        else
+            "";
         defer observability.endAuthnSpan(span, ok, if (ok) subject_id else null);
 
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         var count: usize = 0;
         var it = self.keys.iterator();
@@ -292,9 +377,11 @@ pub const ApiKeyManager = struct {
 
     /// List all keys for a user. Returns owned copies; caller must
     /// call `freeKeyList` to release the returned slice.
+    /// The SAME allocator passed here MUST be passed to freeKeyList —
+    /// mixing allocators is undefined behavior.
     pub fn listUserKeys(self: *Self, allocator: Allocator, user_id: u64) ![]ApiKey {
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         var list: std.ArrayListUnmanaged(ApiKey) = .empty;
         var cloned_count: usize = 0;
@@ -313,6 +400,7 @@ pub const ApiKeyManager = struct {
                 copy.name = try allocator.dupe(u8, entry.value_ptr.name);
                 errdefer allocator.free(copy.name);
                 copy.scopes = try dupeScopes(allocator, entry.value_ptr.scopes);
+                errdefer freeScopes(allocator, copy.scopes);
                 try list.append(allocator, copy);
                 cloned_count += 1;
             }
@@ -331,13 +419,13 @@ pub const ApiKeyManager = struct {
 
     /// Delete expired keys (cleanup). Returns the number of keys removed.
     pub fn cleanupExpired(self: *Self) !usize {
-        self.mutex.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
-        defer self.mutex.unlock(std.Io.Threaded.global_single_threaded.io());
+        self.mutex.lockUncancelable(ioh());
+        defer self.mutex.unlock(ioh());
 
         var to_remove: std.ArrayListUnmanaged([TOKEN_ID_SIZE]u8) = .empty;
         defer to_remove.deinit(self.allocator);
 
-        const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).toSeconds();
+        const now = nowSeconds();
         var it = self.keys.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.expires_at) |exp| {
@@ -468,6 +556,7 @@ test "ApiKeyManager: create and validate key" {
     try std.testing.expect(key != null);
 
     if (key) |k| {
+        defer manager.freeValidatedKey(k);
         try std.testing.expectEqual(@as(u64, 1), k.user_id);
         try std.testing.expectEqualStrings("test-key", k.name);
         try std.testing.expect(k.is_active);
@@ -486,8 +575,9 @@ test "ApiKeyManager: custom prefix" {
 
     try std.testing.expect(std.mem.startsWith(u8, key_string, "myapp1."));
 
-    const key = try manager.validateKey(key_string);
-    try std.testing.expect(key != null);
+    if (try manager.validateKey(key_string)) |k| {
+        manager.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 }
 
 test "ApiKeyManager: validate key with wrong secret fails" {
@@ -513,14 +603,14 @@ test "ApiKeyManager: revoke key" {
     const key_string = try manager.createKey(1, "test-key", &[_][]const u8{"metrics:read"}, null);
     defer allocator.free(key_string);
 
-    var key = try manager.validateKey(key_string);
-    try std.testing.expect(key != null);
+    if (try manager.validateKey(key_string)) |k| {
+        manager.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 
     const parsed = try parseApiKey(key_string);
     try std.testing.expect(manager.revokeKey(parsed.id));
 
-    key = try manager.validateKey(key_string);
-    try std.testing.expect(key == null);
+    try std.testing.expect((try manager.validateKey(key_string)) == null);
 }
 
 test "ApiKeyManager: expired key fails validation" {
@@ -551,6 +641,7 @@ test "ApiKeyManager: hasScope checks correctly" {
     defer allocator.free(key_string);
 
     const key = (try manager.validateKey(key_string)).?;
+    defer manager.freeValidatedKey(key);
 
     try std.testing.expect(ApiKeyManager.hasScope(&key, "metrics:read"));
     try std.testing.expect(ApiKeyManager.hasScope(&key, "health:read"));
@@ -567,6 +658,7 @@ test "ApiKeyManager: wildcard scope grants all" {
     defer allocator.free(key_string);
 
     const key = (try manager.validateKey(key_string)).?;
+    defer manager.freeValidatedKey(key);
 
     try std.testing.expect(ApiKeyManager.hasScope(&key, "metrics:read"));
     try std.testing.expect(ApiKeyManager.hasScope(&key, "admin:write"));
@@ -670,7 +762,9 @@ test "ApiKeyManager: revokeUserKeys revokes all keys for a user" {
     try std.testing.expect((try manager.validateKey(k2)) == null);
 
     // User 2 key should still work.
-    try std.testing.expect((try manager.validateKey(k3)) != null);
+    if (try manager.validateKey(k3)) |k| {
+        manager.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 }
 
 test "ApiKeyManager: revokeUserKeys returns 0 for unknown user" {
@@ -735,7 +829,9 @@ test "ApiKeyManager: cleanupExpired removes expired keys" {
     // Expired key should be gone (not just inactive — fully removed).
     try std.testing.expect((try manager.validateKey(k1)) == null);
     // Permanent key still works.
-    try std.testing.expect((try manager.validateKey(k2)) != null);
+    if (try manager.validateKey(k2)) |k| {
+        manager.freeValidatedKey(k);
+    } else return error.TestUnexpectedResult;
 }
 
 test "ApiKeyManager: cleanupExpired with no expired keys" {
@@ -749,4 +845,109 @@ test "ApiKeyManager: cleanupExpired with no expired keys" {
 
     const removed = try manager.cleanupExpired();
     try std.testing.expectEqual(@as(usize, 0), removed);
+}
+
+test "validateKey returns owned deep copy safe after revoke" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{});
+    defer manager.deinit();
+
+    const ks = try manager.createKey(7, "owned-key", &[_][]const u8{ "a:read", "b:write" }, null);
+    defer allocator.free(ks);
+
+    const key = (try manager.validateKey(ks)).?;
+    defer manager.freeValidatedKey(key);
+
+    // Destroy the manager's copy; the returned key must remain valid.
+    const parsed = try parseApiKey(ks);
+    _ = manager.revokeKey(parsed.id);
+    _ = try manager.cleanupExpired();
+
+    try std.testing.expectEqualStrings("owned-key", key.name);
+    try std.testing.expect(ApiKeyManager.hasScope(&key, "a:read"));
+}
+
+test "createKey rejects key_prefix containing '.'" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{ .key_prefix = "my.app" });
+    defer manager.deinit();
+    try std.testing.expectError(error.InvalidKeyPrefix, manager.createKey(1, "x", &[_][]const u8{"r"}, null));
+}
+
+test "createKey enforces max_keys limit" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{ .max_keys = 2 });
+    defer manager.deinit();
+    const k1 = try manager.createKey(1, "a", &[_][]const u8{"r"}, null);
+    defer allocator.free(k1);
+    const k2 = try manager.createKey(1, "b", &[_][]const u8{"r"}, null);
+    defer allocator.free(k2);
+    try std.testing.expectError(error.KeyLimitReached, manager.createKey(1, "c", &[_][]const u8{"r"}, null));
+}
+
+test "pepper changes stored hash semantics" {
+    const allocator = std.testing.allocator;
+    const pepper: [32]u8 = @splat(0x42);
+    var manager = ApiKeyManager.init(allocator, .{ .pepper = &pepper });
+    defer manager.deinit();
+    const ks = try manager.createKey(1, "peppered", &[_][]const u8{"r"}, null);
+    defer allocator.free(ks);
+
+    // Validates with the same pepper.
+    const key = (try manager.validateKey(ks)).?;
+    manager.freeValidatedKey(key);
+
+    // A manager with a DIFFERENT pepper must reject the same key string.
+    const other_pepper: [32]u8 = @splat(0x43);
+    var other = ApiKeyManager.init(allocator, .{ .pepper = &other_pepper });
+    defer other.deinit();
+    try std.testing.expect((try other.validateKey(ks)) == null);
+}
+
+test "expiry boundary: expires_in_seconds=0 is immediately expired (inclusive >=)" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{});
+    defer manager.deinit();
+    const ks = try manager.createKey(1, "boundary", &[_][]const u8{"r"}, 0);
+    defer allocator.free(ks);
+    try std.testing.expect((try manager.validateKey(ks)) == null);
+}
+
+test "createKey accepts empty name and empty scopes" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{});
+    defer manager.deinit();
+    const ks = try manager.createKey(1, "", &[_][]const u8{}, null);
+    defer allocator.free(ks);
+    const key = (try manager.validateKey(ks)).?;
+    defer manager.freeValidatedKey(key);
+    try std.testing.expectEqual(@as(usize, 0), key.scopes.len);
+    try std.testing.expectEqual(@as(usize, 0), key.name.len);
+}
+
+test "ApiKeyManager: concurrent create/validate/revoke under std.Thread" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{});
+    defer manager.deinit();
+
+    const Worker = struct {
+        fn run(mgr: *ApiKeyManager, alloc: std.mem.Allocator, uid: u64) void {
+            var i: usize = 0;
+            while (i < 50) : (i += 1) {
+                const ks = mgr.createKey(uid, "t", &[_][]const u8{"r"}, null) catch return;
+                defer alloc.free(ks);
+                if (mgr.validateKey(ks) catch null) |key| {
+                    mgr.freeValidatedKey(key);
+                }
+                const parsed = parseApiKey(ks) catch return;
+                _ = mgr.revokeKey(parsed.id);
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*t, i| {
+        t.* = try std.Thread.spawn(.{}, Worker.run, .{ &manager, allocator, @as(u64, i) });
+    }
+    for (&threads) |*t| t.join();
 }
