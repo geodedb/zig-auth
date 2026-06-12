@@ -53,3 +53,4 @@ coverage/
 
 # Local git worktrees (per-feature isolated checkouts)
 .worktrees/
+__pycache__/
