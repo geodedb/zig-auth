@@ -37,6 +37,21 @@ pub const MfaConfig = struct {
     deterministic: bool = false,
     /// Salt for deterministic derivation. Ignored when `deterministic` is false.
     salt: []const u8 = "auth-mfa-salt-v1",
+
+    /// Validate configuration invariants. Called by `enroll`,
+    /// `generateCode`, and `verifyCode`.
+    ///
+    /// - `digits` must be 6..9: below 6 violates RFC 4226 minimum
+    ///   strength; 0 would make every code `0` (modulus 1 — total MFA
+    ///   bypass); above 9 overflows the u32 code space.
+    /// - `step_seconds` must be nonzero (timestep division).
+    /// - `window` must be 0..64: negative silently rejects every code;
+    ///   larger windows defeat the purpose of TOTP and risk overflow.
+    pub fn validate(self: MfaConfig) error{InvalidMfaConfig}!void {
+        if (self.digits < 6 or self.digits > 9) return error.InvalidMfaConfig;
+        if (self.step_seconds == 0) return error.InvalidMfaConfig;
+        if (self.window < 0 or self.window > 64) return error.InvalidMfaConfig;
+    }
 };
 
 /// Enrollment result containing the Base32-encoded secret and scratch codes.
@@ -53,6 +68,10 @@ pub const Enrollment = struct {
 };
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// 10^n for n in 0..=9 — comptime table so the TOTP modulus is a
+/// single indexed load (digits are validated to 6..9).
+const POW10 = [_]u32{ 1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000 };
 
 /// Encode raw bytes to Base32 (RFC 4648, no padding).
 /// Output length is always `((raw.len + 4) / 5) * 8`. For inputs whose
@@ -146,6 +165,7 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
 /// new and it stays on the stack). On any error path the span closes
 /// `.error_` with no subject id attached.
 pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !Enrollment {
+    try config.validate();
     const span = observability.startAuthnSpan("mfa.enroll");
     var ok: bool = false;
     defer observability.endAuthnSpan(span, ok, if (ok) username else null);
@@ -189,6 +209,7 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !En
 
 /// Generate a TOTP code from a Base32-encoded secret.
 pub fn generateCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, config: MfaConfig) !u32 {
+    try config.validate();
     const secret_raw = try base32Decode(allocator, secret_base32);
     defer {
         crypto.secureZero(u8, secret_raw);
@@ -203,6 +224,7 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
     var counter_be: [8]u8 = undefined;
     std.mem.writeInt(u64, &counter_be, timestep, .big);
 
+    comptime std.debug.assert(HmacSha1.mac_length == 20); // RFC 4226 dynamic truncation reads h[19]
     var h: [HmacSha1.mac_length]u8 = undefined;
     HmacSha1.create(&h, &counter_be, secret_raw);
     defer crypto.secureZero(u8, &h);
@@ -213,9 +235,7 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
         (@as(u32, h[offset + 2]) << 8) |
         (@as(u32, h[offset + 3]));
 
-    var mod: u32 = 1;
-    var i: u8 = 0;
-    while (i < config.digits) : (i += 1) mod *= 10;
+    const mod = POW10[config.digits];
     return bin_code % mod;
 }
 
@@ -229,6 +249,7 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
 /// `.error_` on reject. The secret_base32 and code values NEVER appear
 /// as span attributes.
 pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !bool {
+    try config.validate();
     const span = observability.startAuthnSpan("mfa");
     var ok: bool = false;
     defer observability.endAuthnSpan(span, ok, null);
@@ -431,4 +452,28 @@ test "base32 RFC 4648 test vectors (mod-5 inputs)" {
             try std.testing.expectEqualSlices(u8, v.raw, decoded);
         }
     }
+}
+
+test "MfaConfig validation rejects digits=0 (silent MFA bypass)" {
+    const allocator = std.testing.allocator;
+    const cfg = MfaConfig{ .deterministic = true, .digits = 0 };
+    try std.testing.expectError(error.InvalidMfaConfig, enroll(allocator, "mallory", cfg));
+    try std.testing.expectError(error.InvalidMfaConfig, generateCode(allocator, "MZXW6YTBMZXW6YTBMZXW6YTBMZXW6YTB", 1_700_000_000_000, cfg));
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, "MZXW6YTBMZXW6YTBMZXW6YTBMZXW6YTB", 1_700_000_000_000, 0, cfg));
+}
+
+test "MfaConfig validation rejects out-of-range digits, step, window" {
+    const allocator = std.testing.allocator;
+    const secret = "MZXW6YTBMZXW6YTBMZXW6YTBMZXW6YTB";
+    const ts: u64 = 1_700_000_000_000;
+    // digits > 9 would overflow u32 modulus
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .digits = 10 }));
+    // digits < 6 below RFC 4226 minimum
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .digits = 5 }));
+    // step_seconds == 0 division by zero
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .step_seconds = 0 }));
+    // window < 0 silently rejects every code (lockout)
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .window = -1 }));
+    // window absurdly large risks u64 overflow in delta arithmetic
+    try std.testing.expectError(error.InvalidMfaConfig, verifyCode(allocator, secret, ts, 0, .{ .window = 65 }));
 }
