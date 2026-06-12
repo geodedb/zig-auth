@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
 
-.PHONY: all build test test-unit test-integration clean check fmt help dev ci
+.PHONY: all build test test-unit test-integration clean check fmt help dev ci example
 .PHONY: test-release-safe test-release-fast test-release-small test-all-optimizations
 .PHONY: pre-commit-install pre-commit pre-commit-run
 
@@ -39,10 +39,15 @@ check:
 	@echo "🔍 Checking for compilation errors..."
 	@zig build check
 
+# Build and run the basic example
+example: ## Build and run the basic example
+	@echo "📖 Running basic example..."
+	@zig build example
+
 # Format source code
 fmt:
 	@echo "📝 Formatting code..."
-	@zig fmt src/ tests/ build.zig
+	@zig fmt src/ tests/ examples/ build.zig
 
 # Quick development iteration loop
 dev: fmt check test-unit
@@ -90,6 +95,7 @@ help:
 	@echo "Development:"
 	@echo "  all                  Build and run tests (default)"
 	@echo "  build                Build the library"
+	@echo "  example              Build and run the basic example"
 	@echo "  dev                  Quick iteration: fmt + check + test"
 	@echo "  ci                   Full CI: clean + build + test"
 	@echo ""

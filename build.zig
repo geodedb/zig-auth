@@ -186,4 +186,22 @@ pub fn build(b: *std.Build) void {
     }
     const run_observability_enabled_tests = b.addRunArtifact(observability_enabled_tests);
     test_step.dependOn(&run_observability_enabled_tests.step);
+
+    // ========================================================================
+    // Example executable: `zig build example` builds and runs it.
+    // ========================================================================
+
+    const example_exe = b.addExecutable(.{
+        .name = "example-basic",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "auth", .module = module }},
+        }),
+    });
+    const example_step = b.step("example", "Build and run the basic example");
+    const run_example = b.addRunArtifact(example_exe);
+    example_step.dependOn(&run_example.step);
+    check_step.dependOn(&example_exe.step);
 }
