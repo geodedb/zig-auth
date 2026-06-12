@@ -77,6 +77,7 @@ pub const SCRATCH_CODE_LEN: usize = 32;
 
 /// Hash a scratch code for at-rest storage. Store ONLY these hashes;
 /// never persist plaintext recovery codes.
+/// Bare SHA-256 (no KDF/salt) is sufficient: codes are 160-bit uniform CSPRNG output, so preimage cost is ~2^160 regardless of hash speed.
 pub fn hashScratchCode(code: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(code, &out, .{});
@@ -85,11 +86,22 @@ pub fn hashScratchCode(code: []const u8) [32]u8 {
 
 /// Verify a presented recovery code against stored hashes, enforcing
 /// single use. Scans ALL hashes with constant-time comparison (no early
-/// exit) so timing does not reveal which slot matched. On match of an
-/// unconsumed slot, marks it consumed and returns its index; otherwise
-/// returns null. `hashes` and `consumed` must be the same length.
+/// exit). Rejection timing is independent of the stored hashes and
+/// consumed state (full fixed-length scan, timing-safe hash comparison);
+/// the matched index itself is returned to the caller and is not a secret.
+/// On match of an unconsumed slot, marks it consumed and returns its
+/// index; otherwise returns null. `hashes` and `consumed` must be the
+/// same length.
+///
+/// CONCURRENCY: the consumed-flag check and set are not atomic. Calls
+/// for a given user MUST be externally serialized; in persistent
+/// deployments make the consumed-flag update atomic with verification
+/// (e.g. a conditional UPDATE / compare-and-set), never read-verify-writeback.
+/// INPUT: codes are uppercase base32 — normalize case and strip any
+/// separators before calling.
 pub fn verifyScratchCode(hashes: []const [32]u8, consumed: []bool, presented: []const u8) ?usize {
     std.debug.assert(hashes.len == consumed.len);
+    if (hashes.len != consumed.len) return null; // fail closed in release builds
     var presented_hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(presented, &presented_hash, .{});
     defer crypto.secureZero(u8, &presented_hash);
@@ -220,7 +232,10 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !En
     const scodes = try allocator.alloc([]u8, config.scratch_code_count);
     var allocated: usize = 0;
     errdefer {
-        for (scodes[0..allocated]) |code| allocator.free(code);
+        for (scodes[0..allocated]) |code| {
+            crypto.secureZero(u8, code);
+            allocator.free(code);
+        }
         allocator.free(scodes);
     }
 
@@ -524,7 +539,7 @@ test "scratch codes are 32 chars and independent of the TOTP secret" {
     const e1 = try enroll(allocator, "rc-user", .{});
     defer e1.deinit(allocator);
     for (e1.scratch_codes) |code| {
-        try std.testing.expectEqual(@as(usize, 32), code.len);
+        try std.testing.expectEqual(@as(usize, SCRATCH_CODE_LEN), code.len);
         for (code) |c| try std.testing.expect((c >= 'A' and c <= 'Z') or (c >= '2' and c <= '7'));
     }
     // Deterministic enrollments must still produce DIFFERENT scratch codes
