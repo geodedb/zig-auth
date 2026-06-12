@@ -1,7 +1,7 @@
 # auth
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.15.1+-orange.svg)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.16.0+-orange.svg)](https://ziglang.org/)
 
 Reusable authentication primitives for Zig applications.
 
@@ -10,9 +10,9 @@ Reusable authentication primitives for Zig applications.
 - **HMAC Chain Integrity** -- HMAC-SHA256 record hashing, HKDF key derivation, chain tamper detection
 - **API Key Management** -- Create, validate, revoke API keys with configurable prefixes and scoped access
 - **MFA/TOTP** -- RFC 6238 TOTP enrollment, code generation, and verification
-- **Zero Dependencies**: Pure Zig standard library only
+- **Zero dependencies by default** — pure Zig stdlib; optional OpenTelemetry instrumentation behind `-Dwith_otel` (currently inert — see [docs/USAGE.md](docs/USAGE.md))
 - **Memory Safe**: Leak-free allocation patterns with `secureZero` on secrets
-- **Well Tested**: 59 tests (47 unit + 12 integration), zero leaks
+- **Tested** — comprehensive unit + integration suite, leak-checked allocations, fuzzed in CI
 
 ## Installation
 
@@ -23,7 +23,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .auth = .{
-        .url = "https://gitlab.com/devnw/zig/auth/-/archive/v0.1.0/auth-v0.1.0.tar.gz",
+        .url = "https://gitlab.com/devnw/zig/auth/-/archive/v0.1.5/auth-v0.1.5.tar.gz",
         .hash = "...",
     },
 },
@@ -61,7 +61,7 @@ See [docs/USAGE.md](docs/USAGE.md) for the full usage guide.
 
 ## Requirements
 
-- Zig 0.15.1 or later
+- Zig 0.16.0 or later
 
 ## Building
 
@@ -145,8 +145,7 @@ pub fn main() !void {
 }
 ```
 
-For full integration details, see the rollout recipe at
-`otel/docs/integration/RECIPE.md`.
+For full integration details, see [gitlab.com/devnw/zig/otel](https://gitlab.com/devnw/zig/otel).
 
 ## Documentation
 

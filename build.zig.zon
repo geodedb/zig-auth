@@ -2,7 +2,7 @@
     .name = .auth,
     .version = "0.1.5",
     .fingerprint = 0xf8deb0596799be5b,
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Otel observability dep. Lazy: only fetched when the build
         // reaches `b.lazyDependency("otel", ...)` under `-Dwith_otel=true`.

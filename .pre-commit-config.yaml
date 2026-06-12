@@ -156,6 +156,20 @@ repos:
 
 - repo: local
   hooks:
+      # Verify root.zig version constant matches build.zig.zon .version.
+  - id: version-sync
+    name: root.zig version matches build.zig.zon
+    entry: bash
+    args:
+    - -c
+    - |
+      z=$(grep -oP '\.version = "\K[0-9.]+' build.zig.zon | head -1)
+      r=$(grep -oP 'pub const version = "\K[0-9.]+' src/root.zig)
+      if [ "$z" != "$r" ]; then echo "version mismatch: zon=$z root.zig=$r"; exit 1; fi
+    language: system
+    files: ^(build\.zig\.zon|src/root\.zig)$
+    pass_filenames: false
+
       # Diamond-dep detector — fail loud when build.zig.zon transitively
       # pins the same package name to two different content hashes.
       # Soft-fails when the zig package cache hasn't been populated yet
@@ -189,5 +203,5 @@ ci:
   autoupdate_branch: ''
   autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
   autoupdate_schedule: weekly
-  skip: [zig-fmt, zig-build, zig-test, detect-diamond-deps]
+  skip: [zig-fmt, zig-build, zig-test, detect-diamond-deps, version-sync]
   submodules: false
