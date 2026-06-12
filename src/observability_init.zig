@@ -99,6 +99,7 @@ pub const Otel = struct {
         observability.global.meter = &self.meter;
     }
 
+    /// Null the globals, flush, and tear down all providers (reverse order).
     pub fn deinit(self: *@This()) void {
         observability.global.tracer = null;
         observability.global.meter = null;

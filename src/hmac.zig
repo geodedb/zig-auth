@@ -77,6 +77,7 @@ fn computeRecordHmacWithBuf(key: *const [32]u8, props: []const KeyValue, indices
     const Ctx = struct {
         kv: []const KeyValue,
 
+        /// Sort-context comparator (key, then value) — public only for std.sort.
         pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
             const ka = ctx.kv[a].key;
             const kb = ctx.kv[b].key;

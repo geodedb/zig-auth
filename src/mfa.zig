@@ -72,6 +72,7 @@ pub const Enrollment = struct {
     secret_base32: []u8,
     scratch_codes: [][]u8,
 
+    /// Zeroize and free the secret and all scratch codes.
     pub fn deinit(self: *const Enrollment, allocator: Allocator) void {
         for (self.scratch_codes) |code| {
             crypto.secureZero(u8, code);

@@ -177,7 +177,7 @@ test "integration: MFA with custom salt isolates secrets (deterministic)" {
 }
 
 test "integration: version is defined" {
-    try std.testing.expectEqualStrings("0.1.0", auth.version);
+    try std.testing.expectEqualStrings("0.1.5", auth.version);
 }
 
 // ============================================================================

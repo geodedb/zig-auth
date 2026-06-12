@@ -54,6 +54,7 @@ const otel = struct {};
 /// `end` signature MUST match `otel.api.trace.Span.end(?u64) void` so
 /// callers can write `span.end(null)` regardless of `enabled` state.
 pub const Span = if (enabled) otel.api.trace.Span else struct {
+    /// No-op end — matches `otel.api.trace.Span.end(?u64) void` so callers compile unchanged.
     pub fn end(self: @This(), _: ?u64) void {
         _ = self;
     }
@@ -89,6 +90,7 @@ pub fn startClientSpan(req: anytype) Span {
     return span;
 }
 
+/// Close an outbound HTTP span with the final HTTP status code.
 pub fn endClientSpan(span: Span, status: u16) void {
     if (!enabled) return;
     otel.instrumentation.http.endClientSpan(span, .{ .status_code = status });
@@ -111,6 +113,7 @@ pub fn startServerSpan(req: anytype) Span {
     return span;
 }
 
+/// Close an inbound HTTP span with the final HTTP status code.
 pub fn endServerSpan(span: Span, status: u16) void {
     if (!enabled) return;
     otel.instrumentation.http.endServerSpan(span, status);

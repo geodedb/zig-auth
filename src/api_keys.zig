@@ -125,6 +125,7 @@ pub const ApiKeyManager = struct {
     keys: std.AutoHashMap([TOKEN_ID_SIZE]u8, ApiKey),
     mutex: std.Io.Mutex,
 
+    /// Create a manager that allocates from `allocator`. Free with `deinit`.
     pub fn init(allocator: Allocator, config: Config) Self {
         return .{
             .allocator = allocator,
@@ -134,6 +135,7 @@ pub const ApiKeyManager = struct {
         };
     }
 
+    /// Free all stored keys and the map. The manager is unusable afterwards.
     pub fn deinit(self: *Self) void {
         self.mutex.lockUncancelable(ioh());
         defer self.mutex.unlock(ioh());
