@@ -274,7 +274,10 @@ fn decodeSecret(allocator: Allocator, secret_base32: []const u8) (Allocator.Erro
         try base32DecodeInto(out.stack[0..decoded_len], secret_base32[0..data_len]);
     } else {
         const b = try allocator.alloc(u8, decoded_len);
-        errdefer allocator.free(b);
+        errdefer {
+            crypto.secureZero(u8, b);
+            allocator.free(b);
+        }
         try base32DecodeInto(b, secret_base32[0..data_len]);
         out.heap = b;
     }
@@ -746,4 +749,29 @@ test "verifyCodeOnce rejects replay of the same step" {
     try std.testing.expect(try verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_used_step, cfg));
     // Replay: same code, same window — must be rejected.
     try std.testing.expect(!try verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_used_step, cfg));
+}
+
+test "decodeSecret heap fallback: oversized secret round-trips through hot path" {
+    const allocator = std.testing.allocator;
+    // 100 raw bytes -> 160 base32 chars: forces the heap arm (> 64-byte stack buffer).
+    var raw: [100]u8 = undefined;
+    for (&raw, 0..) |*b, i| b.* = @truncate(i *% 7 +% 13);
+    const big_secret = try base32Encode(allocator, &raw);
+    defer allocator.free(big_secret);
+    try std.testing.expect(big_secret.len == 160);
+
+    const ts: u64 = 1_700_000_000_000;
+    const code = try generateCode(allocator, big_secret, ts, .{});
+    var last_step: u64 = 0;
+    try std.testing.expect(try verifyCodeOnce(allocator, big_secret, ts, code, &last_step, .{}));
+}
+
+test "decodeSecret heap fallback: oversized invalid base32 errors without leaking" {
+    const allocator = std.testing.allocator;
+    // 160 valid-length chars with an invalid char ('0') near the END so the
+    // heap buffer is allocated and partially written before the error.
+    var bad: [160]u8 = @splat('A');
+    bad[150] = '0'; // '0' is not in the RFC 4648 base32 alphabet
+    const ts: u64 = 1_700_000_000_000;
+    try std.testing.expectError(error.InvalidBase32, generateCode(allocator, &bad, ts, .{}));
 }
