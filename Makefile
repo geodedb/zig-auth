@@ -3,14 +3,16 @@
 # Copyright (c) 2024-2025 CodePros
 
 .PHONY: all build test test-unit test-integration clean check fmt help dev ci example
-.PHONY: test-release-safe test-release-fast test-release-small test-all-optimizations
-.PHONY: pre-commit-install pre-commit pre-commit-run
+.PHONY: test-release test-release-safe test-release-fast test-release-small test-all-optimizations
+.PHONY: fuzz pre-commit-install pre-commit pre-commit-run
 
 # Default target: build and run tests
 all: build test-unit
 	@echo "✅ All builds and tests completed successfully!"
 
-# Build the library
+# Build the library (full compile + link).
+# Note: CI's "build" job runs `zig build check` (compile-only, no codegen);
+# `make build` here runs a full `zig build` including linking and output.
 build:
 	@echo "🔨 Building auth..."
 	@zig build
@@ -53,8 +55,21 @@ fmt:
 dev: fmt check test-unit
 	@echo "✅ Development checks passed"
 
-# Full CI pipeline (clean slate)
-ci: clean build test
+# Run the CI fuzz job locally
+fuzz: ## Run the CI fuzz job locally
+	@echo "🔬 Running fuzz tests (60s timeout)..."
+	@timeout 60 zig build test --fuzz; rc=$$?; if [ $$rc -ne 0 ] && [ $$rc -ne 124 ]; then exit $$rc; fi
+
+# Release-mode test matrix (mirrors CI)
+test-release: ## Release-mode test matrix (mirrors CI)
+	@echo "🧪 Running release-mode test matrix..."
+	@zig build test -Doptimize=ReleaseSafe && \
+	 zig build test -Doptimize=ReleaseFast && \
+	 zig build test-integration -Doptimize=ReleaseSafe
+	@echo "✅ Release-mode tests passed"
+
+# Full CI pipeline (clean slate, mirrors pipeline more closely)
+ci: clean check test test-release
 	@echo "✅ CI pipeline passed"
 
 # Release optimization level tests
@@ -97,20 +112,22 @@ help:
 	@echo "  build                Build the library"
 	@echo "  example              Build and run the basic example"
 	@echo "  dev                  Quick iteration: fmt + check + test"
-	@echo "  ci                   Full CI: clean + build + test"
+	@echo "  ci                   Full CI: clean + check + test + test-release"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test                 Run all tests"
 	@echo "  test-unit            Run unit tests only"
 	@echo "  test-integration     Run integration tests only"
+	@echo "  test-release         Release-mode test matrix (mirrors CI)"
 	@echo "  test-release-safe    Test with ReleaseSafe"
 	@echo "  test-release-fast    Test with ReleaseFast"
 	@echo "  test-release-small   Test with ReleaseSmall"
 	@echo "  test-all-optimizations  Test all optimization levels"
+	@echo "  fuzz                 Run the CI fuzz job locally"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  fmt                  Format source code"
-	@echo "  check                Check for compilation errors"
+	@echo "  check                Compile-check all code (mirrors CI build job)"
 	@echo "  pre-commit           Run pre-commit hooks"
 	@echo "  pre-commit-install   Install pre-commit hooks"
 	@echo ""
