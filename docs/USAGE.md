@@ -133,7 +133,8 @@ pub fn apiKeyDemo(allocator: std.mem.Allocator) !void {
     defer allocator.free(key_string);
 
     // Extract the token from an HTTP Authorization header.
-    const header = "Bearer " ++ key_string;
+    const header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key_string});
+    defer allocator.free(header);
     const token = auth.api_keys.parseBearerToken(header) orelse return error.MissingToken;
 
     // Validate (returns a deep copy safe to hold across concurrent revokes).
