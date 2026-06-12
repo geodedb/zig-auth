@@ -23,6 +23,17 @@ const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
 // and are zeroised on return.
 const observability = @import("observability");
 
+/// Errors from MFA configuration validation.
+pub const ConfigError = error{InvalidMfaConfig};
+
+/// Errors from `enroll`.
+pub const EnrollError = Allocator.Error || std.Io.RandomSecureError || ConfigError || error{
+    DeterministicModeIsTestOnly,
+};
+
+/// Errors from `generateCode`, `verifyCode`, `verifyCodeStep`, and `verifyCodeOnce`.
+pub const VerifyError = Allocator.Error || ConfigError || error{InvalidBase32};
+
 /// MFA configuration.
 pub const MfaConfig = struct {
     /// Number of TOTP digits (typically 6).
@@ -255,7 +266,7 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
 /// identifier being enrolled (not a credential — the secret is what's
 /// new and it stays on the stack). On any error path the span closes
 /// `.error_` with no subject id attached.
-pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !Enrollment {
+pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) EnrollError!Enrollment {
     try config.validate();
     const span = observability.startAuthnSpan("mfa.enroll");
     var ok: bool = false;
@@ -297,7 +308,7 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) !En
 }
 
 /// Generate a TOTP code from a Base32-encoded secret.
-pub fn generateCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, config: MfaConfig) !u32 {
+pub fn generateCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, config: MfaConfig) VerifyError!u32 {
     try config.validate();
     const secret_raw = try base32Decode(allocator, secret_base32);
     defer {
@@ -341,7 +352,7 @@ fn generateCodeFromRaw(secret_raw: []const u8, timestamp_ms: u64, config: MfaCon
 /// notion of who the verifier is. Span status: `.ok` on accept,
 /// `.error_` on reject. The secret_base32 and code values NEVER appear
 /// as span attributes.
-pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !?u64 {
+pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) VerifyError!?u64 {
     try config.validate();
     const span = observability.startAuthnSpan("mfa");
     var ok: bool = false;
@@ -381,7 +392,7 @@ pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp
 /// Verify a TOTP code (boolean form). Prefer `verifyCodeOnce` (or
 /// `verifyCodeStep` + your own persistence) in production: this form
 /// alone cannot reject replayed codes within the window.
-pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) !bool {
+pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, config: MfaConfig) VerifyError!bool {
     return (try verifyCodeStep(allocator, secret_base32, timestamp_ms, code, config)) != null;
 }
 
@@ -390,7 +401,7 @@ pub fn verifyCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms:
 /// code is accepted only if its matched step is strictly greater, and
 /// the mark is advanced on acceptance. Callers must persist the
 /// updated value atomically with the login.
-pub fn verifyCodeOnce(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, last_used_step: *u64, config: MfaConfig) !bool {
+pub fn verifyCodeOnce(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, code: u32, last_used_step: *u64, config: MfaConfig) VerifyError!bool {
     const step = (try verifyCodeStep(allocator, secret_base32, timestamp_ms, code, config)) orelse return false;
     if (step <= last_used_step.*) return false;
     last_used_step.* = step;

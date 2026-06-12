@@ -65,6 +65,19 @@ pub const Config = struct {
     max_keys: ?usize = null,
 };
 
+/// Errors from `parseApiKey`.
+pub const ParseError = error{InvalidApiKeyFormat};
+
+/// Errors from `ApiKeyManager.createKey`.
+pub const CreateKeyError = Allocator.Error || std.Io.RandomSecureError || error{
+    InvalidKeyPrefix,
+    KeyLimitReached,
+    TokenIdCollision,
+};
+
+/// Errors from `ApiKeyManager.validateKey`.
+pub const ValidateKeyError = Allocator.Error || ParseError;
+
 /// API Key structure (stored server-side; never contains the raw secret).
 pub const ApiKey = struct {
     id: [TOKEN_ID_SIZE]u8,
@@ -148,7 +161,7 @@ pub const ApiKeyManager = struct {
         name: []const u8,
         scopes: []const []const u8,
         expires_in_seconds: ?i64,
-    ) ![]u8 {
+    ) CreateKeyError![]u8 {
         const span = observability.startAuthnSpan("api_key.issue");
         var ok: bool = false;
         var subject_buf: [32]u8 = undefined;
@@ -232,7 +245,7 @@ pub const ApiKeyManager = struct {
     /// failed attempts are visible as security events without leaking
     /// which subject they targeted. The raw key string and parsed
     /// secret NEVER leave the function as span attributes.
-    pub fn validateKey(self: *Self, key_string: []const u8) !?ApiKey {
+    pub fn validateKey(self: *Self, key_string: []const u8) ValidateKeyError!?ApiKey {
         const span = observability.startAuthnSpan("api_key");
         var ok: bool = false;
         var subject_buf: [32]u8 = undefined;
@@ -381,7 +394,7 @@ pub const ApiKeyManager = struct {
     /// call `freeKeyList` to release the returned slice.
     /// The SAME allocator passed here MUST be passed to freeKeyList —
     /// mixing allocators is undefined behavior.
-    pub fn listUserKeys(self: *Self, allocator: Allocator, user_id: u64) ![]ApiKey {
+    pub fn listUserKeys(self: *Self, allocator: Allocator, user_id: u64) Allocator.Error![]ApiKey {
         self.mutex.lockUncancelable(ioh());
         defer self.mutex.unlock(ioh());
 
@@ -422,7 +435,7 @@ pub const ApiKeyManager = struct {
     /// Delete expired AND revoked keys (cleanup). Revocation is permanent,
     /// so revoked entries are tombstones — removing them reclaims memory
     /// and max_keys quota. Returns the number of keys removed.
-    pub fn cleanupExpired(self: *Self) !usize {
+    pub fn cleanupExpired(self: *Self) Allocator.Error!usize {
         self.mutex.lockUncancelable(ioh());
         defer self.mutex.unlock(ioh());
 
@@ -470,7 +483,7 @@ fn freeScopes(allocator: Allocator, scopes: []const []const u8) void {
 }
 
 /// Format an API key to string: <prefix>.<id_b64url>.<secret_b64url>
-pub fn formatApiKey(allocator: Allocator, prefix: []const u8, id: *const [TOKEN_ID_SIZE]u8, secret: *const [SECRET_SIZE]u8) ![]u8 {
+pub fn formatApiKey(allocator: Allocator, prefix: []const u8, id: *const [TOKEN_ID_SIZE]u8, secret: *const [SECRET_SIZE]u8) Allocator.Error![]u8 {
     const encoder = std.base64.url_safe_no_pad.Encoder;
 
     const id_encoded_len = encoder.calcSize(TOKEN_ID_SIZE);
@@ -493,7 +506,7 @@ pub fn formatApiKey(allocator: Allocator, prefix: []const u8, id: *const [TOKEN_
 
 /// Parse an API key string to components.
 /// Accepts any version prefix (caller validates if needed).
-pub fn parseApiKey(key_string: []const u8) !ParsedApiKey {
+pub fn parseApiKey(key_string: []const u8) ParseError!ParsedApiKey {
     var parts = std.mem.splitScalar(u8, key_string, '.');
 
     const prefix = parts.next() orelse return error.InvalidApiKeyFormat;
