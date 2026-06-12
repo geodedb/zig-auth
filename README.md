@@ -10,7 +10,7 @@ Reusable authentication primitives for Zig applications.
 - **HMAC Chain Integrity** -- HMAC-SHA256 record hashing, HKDF key derivation, chain tamper detection
 - **API Key Management** -- Create, validate, revoke API keys with configurable prefixes and scoped access
 - **MFA/TOTP** -- RFC 6238 TOTP enrollment, code generation, and verification
-- **Zero dependencies by default** — pure Zig stdlib; optional OpenTelemetry instrumentation behind `-Dwith_otel` (currently inert — see [docs/USAGE.md](docs/USAGE.md))
+- **Zero dependencies by default** — pure Zig stdlib; optional OpenTelemetry instrumentation behind `-Dwith_otel` (currently inert — see [Observability](#observability))
 - **Memory Safe**: Leak-free allocation patterns with `secureZero` on secrets
 - **Tested** — comprehensive unit + integration suite, leak-checked allocations, fuzzed in CI
 
@@ -81,68 +81,47 @@ make ci
 
 ## Observability
 
-`auth` ships an opt-in OpenTelemetry seam. Every public authn/authz
-entry point is wrapped in a span:
+`auth` ships an opt-in OpenTelemetry seam. The seam is wired at every
+public authn/authz entry point (`ApiKeyManager.validateKey`,
+`ApiKeyManager.createKey`, `ApiKeyManager.revoke*`, `mfa.enroll`,
+`mfa.verifyCode`, `ApiKeyManager.hasScope`), but is **currently inert**
+regardless of the `-Dwith_otel` flag.
 
-- `auth.api_key` — emitted by `ApiKeyManager.validateKey`. On success
-  the span is closed `.ok` with `enduser.id = <user_id>`. On failure
-  (unknown key, wrong secret, expired, revoked, prefix mismatch) the
-  span closes `.error_` with NO subject id attached, so failed
-  attempts cannot be correlated to a known subject through tracing
-  alone.
-- `auth.api_key.issue` — emitted by `ApiKeyManager.createKey`.
-- `auth.api_key.revoke` / `auth.api_key.revoke_all` — emitted by the
-  revocation entry points. Revoke-of-unknown-id surfaces as `.error_`
-  to highlight probing.
-- `auth.mfa.enroll` — emitted by `mfa.enroll`. Subject id on success
-  is the enrolling username (the public identifier).
-- `auth.mfa` — emitted by `mfa.verifyCode`. Span status only
-  (`.ok`/`.error_`); no subject id is attached because `verifyCode`
-  receives the secret blob and code with no caller identity in scope.
-- `authz.{scope}` — emitted by `ApiKeyManager.hasScope`. Both granted
-  and denied checks are recorded for forensic auditing.
+**Status: INERT (tracked as GAP-0020 / [issue #66](https://gitlab.com/devnw/zig/auth/-/issues/66)).**
+`src/observability.zig` hardcodes `enabled = false` as of 2026-05-02
+due to a Zig 0.16 module-dedup quirk that surfaces when `auth` is
+reached through multiple paths in a downstream build graph (a
+`build_options` vs `build_options0` diamond). The seam is preserved as
+a permanent no-op for forward-compatibility and will be restored once
+the upstream Zig dedup issue is resolved.
 
-Span attributes carry only the post-success subject id, the auth
+**Until the seam is restored:**
+
+- `zig build -Dwith_otel=true` still type-checks the otel wiring (no
+  build errors), but zero auth security events are emitted at runtime.
+- Add application-level logging around auth calls in your own code to
+  capture security-relevant events in the interim.
+
+### Design principles (preserved for when the seam is restored)
+
+Span attributes will carry only the post-success subject id, the auth
 method label (`"password"`, `"token"`, `"mfa"`, `"api_key"`), and
 policy vocabulary (action, resource). Raw passwords, tokens, API key
 strings, password hashes, and TOTP secrets/codes are NEVER attached
 as attributes — the seam's API contract refuses to accept them.
 otel's redaction list is a backstop, not the primary defense.
 
-The instrumentation is gated behind `-Dwith_otel`:
+The instrumentation will be gated behind `-Dwith_otel`:
 
 ```bash
 # Default — otel dependency is never resolved, the seam compiles to
 # a comptime-known no-op, and the produced artifacts contain zero
-# otel symbols (verified by otel/scripts/verify-consumer-noop.sh).
+# otel symbols.
 zig build
 
-# Enabled — every entry point emits a span via the otel SDK.
+# Type-checks otel wiring; currently still produces no spans at runtime
+# (see GAP-0020 / issue #66).
 zig build -Dwith_otel=true
-```
-
-When `-Dwith_otel=true`, configure the exporter via `OTEL_*`
-environment variables (default: OTLP/HTTP to `http://localhost:4318`,
-parent-based ratio sampler at 5%). Bootstrap from `main()`:
-
-```zig
-const auth = @import("auth");
-
-pub fn main() !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    // Hold the Otel value at a stable address; the seam stores
-    // pointers into its tracer/meter fields.
-    if (auth.observability.enabled) {
-        var otel = try auth.observability_init.Otel.init(alloc, "my-service");
-        defer otel.deinit();
-        otel.installGlobals();
-    }
-
-    // ... auth calls now emit spans automatically.
-}
 ```
 
 For full integration details, see [gitlab.com/devnw/zig/otel](https://gitlab.com/devnw/zig/otel).
