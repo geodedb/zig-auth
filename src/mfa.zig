@@ -175,6 +175,7 @@ pub fn base32Encode(allocator: Allocator, raw: []const u8) Allocator.Error![]u8 
 
 /// Decode Base32 (RFC 4648) to raw bytes. Accepts both padded and
 /// unpadded input; returns exactly the original byte length.
+/// Lenient decoder: non-canonical trailing bits in the final character are accepted and dropped (two encodings of the same prefix can decode identically).
 pub fn base32Decode(allocator: Allocator, encoded: []const u8) (Allocator.Error || error{InvalidBase32})![]u8 {
     // Strip trailing padding.
     var data_len = encoded.len;
@@ -310,11 +311,24 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) Enr
 /// Generate a TOTP code from a Base32-encoded secret.
 pub fn generateCode(allocator: Allocator, secret_base32: []const u8, timestamp_ms: u64, config: MfaConfig) VerifyError!u32 {
     try config.validate();
-    const secret_raw = try base32Decode(allocator, secret_base32);
-    defer {
-        crypto.secureZero(u8, secret_raw);
-        allocator.free(secret_raw);
-    }
+    // Hot path: decode the secret into a stack buffer (standard TOTP
+    // secrets are 20 bytes / 32 chars) — zero heap traffic per call.
+    var stack_buf: [64]u8 = undefined;
+    var data_len = secret_base32.len;
+    while (data_len > 0 and secret_base32[data_len - 1] == '=') data_len -= 1;
+    const decoded_len = try base32DecodedLen(data_len);
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| allocator.free(b);
+    const secret_raw = if (decoded_len <= stack_buf.len) blk: {
+        try base32DecodeInto(stack_buf[0..decoded_len], secret_base32[0..data_len]);
+        break :blk stack_buf[0..decoded_len];
+    } else blk: {
+        const b = try allocator.alloc(u8, decoded_len);
+        heap_buf = b;
+        try base32DecodeInto(b, secret_base32[0..data_len]);
+        break :blk b;
+    };
+    defer crypto.secureZero(u8, secret_raw);
     return generateCodeFromRaw(secret_raw, timestamp_ms, config);
 }
 
@@ -359,11 +373,24 @@ pub fn verifyCodeStep(allocator: Allocator, secret_base32: []const u8, timestamp
     defer observability.endAuthnSpan(span, ok, null);
 
     // Decode the secret once (not per-iteration).
-    const secret_raw = try base32Decode(allocator, secret_base32);
-    defer {
-        crypto.secureZero(u8, secret_raw);
-        allocator.free(secret_raw);
-    }
+    // Hot path: decode the secret into a stack buffer (standard TOTP
+    // secrets are 20 bytes / 32 chars) — zero heap traffic per call.
+    var stack_buf: [64]u8 = undefined;
+    var data_len = secret_base32.len;
+    while (data_len > 0 and secret_base32[data_len - 1] == '=') data_len -= 1;
+    const decoded_len = try base32DecodedLen(data_len);
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| allocator.free(b);
+    const secret_raw = if (decoded_len <= stack_buf.len) blk: {
+        try base32DecodeInto(stack_buf[0..decoded_len], secret_base32[0..data_len]);
+        break :blk stack_buf[0..decoded_len];
+    } else blk: {
+        const b = try allocator.alloc(u8, decoded_len);
+        heap_buf = b;
+        try base32DecodeInto(b, secret_base32[0..data_len]);
+        break :blk b;
+    };
+    defer crypto.secureZero(u8, secret_raw);
 
     // Convert the provided code to bytes for constant-time comparison.
     const code_bytes = std.mem.toBytes(code);
