@@ -20,6 +20,7 @@ const observability = @import("observability");
 /// Single accessor for the process-global IO used for timestamps and
 /// CSPRNG. Centralized so a future injectable-clock refactor touches
 /// one site.
+/// NOTE: despite the instance name, the mutex/futex path delegates to real OS futexes in non-single-threaded builds (verified against std/Io/Threaded.zig futexWaitUncancelable) — see the ApiKeyManager threading doc.
 inline fn ioh() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }
@@ -272,12 +273,13 @@ pub const ApiKeyManager = struct {
             return null;
         }
 
-        key.last_used_at = now;
-
         var copy = key.*;
         copy.name = try self.allocator.dupe(u8, key.name);
         errdefer self.allocator.free(copy.name);
         copy.scopes = try dupeScopes(self.allocator, key.scopes);
+
+        key.last_used_at = now;
+        copy.last_used_at = now;
 
         if (comptime observability.enabled) {
             const sid = std.fmt.bufPrint(&subject_buf, "{d}", .{key.user_id}) catch null;
@@ -417,7 +419,9 @@ pub const ApiKeyManager = struct {
         allocator.free(keys);
     }
 
-    /// Delete expired keys (cleanup). Returns the number of keys removed.
+    /// Delete expired AND revoked keys (cleanup). Revocation is permanent,
+    /// so revoked entries are tombstones — removing them reclaims memory
+    /// and max_keys quota. Returns the number of keys removed.
     pub fn cleanupExpired(self: *Self) !usize {
         self.mutex.lockUncancelable(ioh());
         defer self.mutex.unlock(ioh());
@@ -428,10 +432,9 @@ pub const ApiKeyManager = struct {
         const now = nowSeconds();
         var it = self.keys.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.expires_at) |exp| {
-                if (now >= exp) {
-                    try to_remove.append(self.allocator, entry.key_ptr.*);
-                }
+            const expired = if (entry.value_ptr.expires_at) |exp| now >= exp else false;
+            if (expired or !entry.value_ptr.is_active) {
+                try to_remove.append(self.allocator, entry.key_ptr.*);
             }
         }
 
@@ -931,23 +934,45 @@ test "ApiKeyManager: concurrent create/validate/revoke under std.Thread" {
     defer manager.deinit();
 
     const Worker = struct {
-        fn run(mgr: *ApiKeyManager, alloc: std.mem.Allocator, uid: u64) void {
+        fn run(mgr: *ApiKeyManager, alloc: std.mem.Allocator, uid: u64, success: *std.atomic.Value(usize)) void {
             var i: usize = 0;
             while (i < 50) : (i += 1) {
                 const ks = mgr.createKey(uid, "t", &[_][]const u8{"r"}, null) catch return;
                 defer alloc.free(ks);
-                if (mgr.validateKey(ks) catch null) |key| {
+                const validated = mgr.validateKey(ks) catch null;
+                if (validated) |key| {
                     mgr.freeValidatedKey(key);
-                }
+                } else continue;
                 const parsed = parseApiKey(ks) catch return;
-                _ = mgr.revokeKey(parsed.id);
+                if (mgr.revokeKey(parsed.id)) {
+                    _ = success.fetchAdd(1, .monotonic);
+                }
             }
         }
     };
 
+    var success = std.atomic.Value(usize).init(0);
     var threads: [4]std.Thread = undefined;
     for (&threads, 0..) |*t, i| {
-        t.* = try std.Thread.spawn(.{}, Worker.run, .{ &manager, allocator, @as(u64, i) });
+        t.* = try std.Thread.spawn(.{}, Worker.run, .{ &manager, allocator, @as(u64, i), &success });
     }
     for (&threads) |*t| t.join();
+
+    try std.testing.expectEqual(@as(usize, 200), success.load(.monotonic));
+}
+
+test "ApiKeyManager: cleanupExpired reclaims revoked keys (max_keys quota recovery)" {
+    const allocator = std.testing.allocator;
+    var manager = ApiKeyManager.init(allocator, .{ .max_keys = 1 });
+    defer manager.deinit();
+    const k1 = try manager.createKey(1, "rotate-me", &[_][]const u8{"r"}, null);
+    defer allocator.free(k1);
+    const parsed = try parseApiKey(k1);
+    try std.testing.expect(manager.revokeKey(parsed.id));
+    // Quota still consumed by the tombstone.
+    try std.testing.expectError(error.KeyLimitReached, manager.createKey(1, "new", &[_][]const u8{"r"}, null));
+    // Cleanup reclaims it.
+    try std.testing.expectEqual(@as(usize, 1), try manager.cleanupExpired());
+    const k2 = try manager.createKey(1, "new", &[_][]const u8{"r"}, null);
+    defer allocator.free(k2);
 }
