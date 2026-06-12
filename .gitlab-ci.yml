@@ -92,7 +92,7 @@ zig-format:
 build:
   stage: build
   # digest of bookworm-slim as of 2026-06-12 — bump deliberately
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
   before_script:
     - *install-zig
   script:
