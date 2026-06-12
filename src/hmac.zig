@@ -49,8 +49,9 @@ pub fn deriveHmacKey(master_key: *const [32]u8, config: HkdfConfig) [32]u8 {
 
 /// Compute HMAC-SHA256 over a set of key-value properties.
 ///
-/// Properties are sorted by key name (lexicographic, ascending) before
-/// hashing to guarantee deterministic output regardless of input order.
+/// Properties are sorted by key then value (lexicographic, ascending) before
+/// hashing to guarantee deterministic output regardless of input order,
+/// including duplicate keys (total order over key then value).
 /// Each property is serialized as:
 ///
 ///     key_len (u32 LE) || key || value_len (u32 LE) || value
@@ -77,7 +78,15 @@ fn computeRecordHmacWithBuf(key: *const [32]u8, props: []const KeyValue, indices
         kv: []const KeyValue,
 
         pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-            return std.mem.lessThan(u8, ctx.kv[a].key, ctx.kv[b].key);
+            const ka = ctx.kv[a].key;
+            const kb = ctx.kv[b].key;
+            const va = ctx.kv[a].value;
+            const vb = ctx.kv[b].value;
+            switch (std.mem.order(u8, ka, kb)) {
+                .lt => return true,
+                .gt => return false,
+                .eq => return std.mem.order(u8, va, vb) == .lt,
+            }
         }
     };
 
@@ -257,4 +266,35 @@ test "verifyHmac returns false for non-matching" {
     var b = [_]u8{0xde} ** 32;
     b[31] = 0xff;
     try std.testing.expect(!verifyHmac(&a, &b));
+}
+
+test "computeRecordHmac is order-independent even with duplicate keys" {
+    const key: [32]u8 = @splat(0x11);
+    const props_ab = [_]KeyValue{
+        .{ .key = "dup", .value = "a" },
+        .{ .key = "dup", .value = "b" },
+    };
+    const props_ba = [_]KeyValue{
+        .{ .key = "dup", .value = "b" },
+        .{ .key = "dup", .value = "a" },
+    };
+    const h1 = try computeRecordHmac(&key, &props_ab);
+    const h2 = try computeRecordHmac(&key, &props_ba);
+    try std.testing.expectEqualSlices(u8, &h1, &h2);
+}
+
+test "computeRecordHmac accepts exactly 128 properties (inclusive boundary)" {
+    const key: [32]u8 = @splat(0x22);
+    var props: [128]KeyValue = undefined;
+    for (&props) |*p| p.* = .{ .key = "k", .value = "v" };
+    _ = try computeRecordHmac(&key, &props);
+}
+
+test "computeRecordHmac distinguishes empty-key/empty-value pairs" {
+    const key: [32]u8 = @splat(0x33);
+    const a = [_]KeyValue{.{ .key = "", .value = "" }};
+    const b = [_]KeyValue{.{ .key = "", .value = "x" }};
+    const ha = try computeRecordHmac(&key, &a);
+    const hb = try computeRecordHmac(&key, &b);
+    try std.testing.expect(!std.mem.eql(u8, &ha, &hb));
 }
