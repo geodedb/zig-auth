@@ -179,3 +179,65 @@ test "integration: MFA with custom salt isolates secrets (deterministic)" {
 test "integration: version is defined" {
     try std.testing.expectEqualStrings("0.1.0", auth.version);
 }
+
+// ============================================================================
+// Adversarial Tests
+// ============================================================================
+
+test "adversarial: parseApiKey malformed input classes" {
+    const cases = [_][]const u8{
+        "", ".", "..", "ak1.", "ak1..", ".abc.def",
+        "ak1.!!!.???",                                                                  "ak1.AAAA.BBBB", // wrong decoded sizes
+        "ak1.AAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.extra",
+    };
+    for (cases) |c| {
+        try std.testing.expectError(error.InvalidApiKeyFormat, auth.api_keys.parseApiKey(c));
+    }
+}
+
+test "adversarial: MFA config edge cases surface errors not panics" {
+    const allocator = std.testing.allocator;
+    const secret = "MZXW6YTBMZXW6YTBMZXW6YTBMZXW6YTB";
+    const ts: u64 = 1_700_000_000_000;
+    try std.testing.expectError(error.InvalidMfaConfig, auth.mfa.verifyCode(allocator, secret, ts, 0, .{ .digits = 0 }));
+    try std.testing.expectError(error.InvalidMfaConfig, auth.mfa.verifyCode(allocator, secret, ts, 0, .{ .step_seconds = 0 }));
+    try std.testing.expectError(error.InvalidMfaConfig, auth.mfa.verifyCode(allocator, secret, ts, 0, .{ .window = -1 }));
+}
+
+test "adversarial: recovery code lifecycle end-to-end" {
+    const allocator = std.testing.allocator;
+    const e = try auth.mfa.enroll(allocator, "endtoend", .{});
+    defer e.deinit(allocator);
+
+    const hashes = try allocator.alloc([32]u8, e.scratch_codes.len);
+    defer allocator.free(hashes);
+    const consumed = try allocator.alloc(bool, e.scratch_codes.len);
+    defer allocator.free(consumed);
+    for (e.scratch_codes, 0..) |code, i| {
+        hashes[i] = auth.mfa.hashScratchCode(code);
+        consumed[i] = false;
+    }
+    // Each code works exactly once.
+    for (e.scratch_codes) |code| {
+        try std.testing.expect(auth.mfa.verifyScratchCode(hashes, consumed, code) != null);
+        try std.testing.expect(auth.mfa.verifyScratchCode(hashes, consumed, code) == null);
+    }
+}
+
+test "adversarial: TOTP replay rejected via verifyCodeOnce across logins" {
+    const allocator = std.testing.allocator;
+    const e = try auth.mfa.enroll(allocator, "replay-int", .{});
+    defer e.deinit(allocator);
+
+    const ts: u64 = 1_700_000_000_000;
+    const code = try auth.mfa.generateCode(allocator, e.secret_base32, ts, .{});
+    var last_step: u64 = 0;
+    try std.testing.expect(try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_step, .{}));
+    try std.testing.expect(!try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts, code, &last_step, .{}));
+    // The NEXT step's code is accepted.
+    const ts2 = ts + 30_000;
+    const code2 = try auth.mfa.generateCode(allocator, e.secret_base32, ts2, .{});
+    if (code2 != code) {
+        try std.testing.expect(try auth.mfa.verifyCodeOnce(allocator, e.secret_base32, ts2, code2, &last_step, .{}));
+    }
+}
