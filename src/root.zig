@@ -46,6 +46,13 @@ pub const api_keys = @import("api_keys.zig");
 /// TOTP enrollment, code generation, and verification (RFC 6238).
 pub const mfa = @import("mfa.zig");
 
+/// FIPS-140-3 / PQC crypto seam. When `-Dfips=false` (default) every
+/// security primitive routes through a std.crypto shim with zero
+/// overhead; when `-Dfips=true` it routes through the linked OpenSSL
+/// FIPS provider. Re-exported so downstream consumers can reach the
+/// same backend (e.g. `auth.crypto_backend.assertActive()` at startup).
+pub const crypto_backend = @import("crypto_backend");
+
 /// otel instrumentation seam. When `-Dwith_otel=false` (the default) every
 /// helper compiles to a comptime-known no-op; when `-Dwith_otel=true` calls
 /// forward to the `otel` SDK. Domain-specific helpers

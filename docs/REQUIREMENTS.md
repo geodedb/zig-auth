@@ -11,6 +11,7 @@ Last updated: 2026-06-12
 | AUTH-REQ-003 | MFA/TOTP support, if included, SHALL be explicitly configured and reusable outside Geode. | `src/mfa.zig` |
 | AUTH-REQ-004 | The library SHALL NOT hardcode Geode-branded token prefixes. | Resolved — see docs/GAP_ANALYSIS_RESOLVED.md |
 | AUTH-REQ-005 | The library SHALL NOT depend on Geode feature flags or product salts. | Resolved — see docs/GAP_ANALYSIS_RESOLVED.md (deterministic salts gated test-only) |
+| REQ-AUTH-FIPS-001 | Security cryptography (HMAC-SHA256, HKDF-SHA256, SHA-256, CSPRNG) SHALL route through the `-Dfips` `crypto_backend` seam; TOTP HMAC-SHA1 is the single documented exemption (RFC 6238 legacy-interop); tests SHALL pass with `-Dfips` both off (std shim, default) and on (OpenSSL FIPS provider). | `src/crypto_backend.zig`, `docs/FIPS.md`, `tests/crypto_backend_seam_test.zig`, `tests/fips_exemption_test.zig` |
 
 ## Packaging Requirements
 

@@ -273,6 +273,26 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&crypto_seam_tests.step);
 
     // ========================================================================
+    // FIPS exemption-boundary test: pins TOTP HMAC-SHA1 as the single
+    // std.crypto exemption and verifies the auth.crypto_backend re-export.
+    // ========================================================================
+    const fips_exemption_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fips_exemption_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "auth", .module = module },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            },
+        }),
+    });
+    if (fips) link.linkOpenssl(b, fips_exemption_tests.root_module, openssl_path);
+    const run_fips_exemption_tests = b.addRunArtifact(fips_exemption_tests);
+    test_step.dependOn(&run_fips_exemption_tests.step);
+    check_step.dependOn(&fips_exemption_tests.step);
+
+    // ========================================================================
     // Example executable: `zig build example` builds and runs it.
     // ========================================================================
 
