@@ -287,6 +287,21 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    // Embed the high-level security-path sources so the test's comptime
+    // boundary guard can scan them for direct std.crypto algorithm use
+    // (the seam impl — crypto_backend.zig/std_shim.zig — is intentionally
+    // NOT embedded; the shim is the std.crypto backend itself). @embedFile
+    // can't escape the package path with `../`, so each source is wired as
+    // a named anonymous import resolved from the build root.
+    fips_exemption_tests.root_module.addAnonymousImport("mfa_src", .{
+        .root_source_file = b.path("src/mfa.zig"),
+    });
+    fips_exemption_tests.root_module.addAnonymousImport("api_keys_src", .{
+        .root_source_file = b.path("src/api_keys.zig"),
+    });
+    fips_exemption_tests.root_module.addAnonymousImport("hmac_src", .{
+        .root_source_file = b.path("src/hmac.zig"),
+    });
     if (fips) link.linkOpenssl(b, fips_exemption_tests.root_module, openssl_path);
     const run_fips_exemption_tests = b.addRunArtifact(fips_exemption_tests);
     test_step.dependOn(&run_fips_exemption_tests.step);
