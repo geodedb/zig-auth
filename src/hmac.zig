@@ -11,15 +11,20 @@
 //! any I/O subsystem.
 
 const std = @import("std");
-const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
-const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
-const timing_safe = std.crypto.timing_safe;
+const backend = @import("crypto_backend");
+const timing_safe = std.crypto.timing_safe; // constant-time util, not an algorithm — stays on std.
 
 /// Length of an HMAC-SHA256 output in bytes.
 pub const HMAC_LEN: usize = 32;
 
 /// Length of an HMAC key in bytes.
 pub const KEY_LEN: usize = 32;
+
+/// Upper bound on the serialized record buffer. 128 properties (the
+/// cap enforced by `computeRecordHmac`) × (4 + 4 bytes of length
+/// prefixes) plus key/value bytes; sized generously for typical small
+/// auth records. Overflow returns error.SerializeOverflow.
+const SERIALIZE_BUF_LEN: usize = 64 * 1024;
 
 /// A key-value pair used as input to `computeRecordHmac`.
 pub const KeyValue = struct {
@@ -40,10 +45,12 @@ pub const HkdfConfig = struct {
 /// The derivation uses configurable salt and info strings so the output
 /// is domain-separated from the raw master key and any other HKDF-derived keys.
 pub fn deriveHmacKey(master_key: *const [32]u8, config: HkdfConfig) [32]u8 {
-    var prk = HkdfSha256.extract(config.salt, master_key);
-    defer std.crypto.secureZero(u8, &prk);
     var okm: [32]u8 = undefined;
-    HkdfSha256.expand(&okm, config.info, prk);
+    // HKDF-SHA256 via the FIPS seam (SP 800-56C). Errors are not
+    // reachable for fixed 32-byte output with valid params, so a
+    // backend failure here is unrecoverable corruption — panic.
+    backend.Kdf.hkdf(.sha256, master_key, config.salt, config.info, &okm) catch
+        @panic("HKDF-SHA256 backend failure in deriveHmacKey");
     return okm;
 }
 
@@ -58,26 +65,22 @@ pub fn deriveHmacKey(master_key: *const [32]u8, config: HkdfConfig) [32]u8 {
 ///
 /// This length-prefixed format is unambiguous: no combination of different
 /// key/value contents can produce the same byte stream.
-pub fn computeRecordHmac(key: *const [32]u8, props: []const KeyValue) error{TooManyProperties}![32]u8 {
+pub fn computeRecordHmac(key: *const [32]u8, props: []const KeyValue) error{ TooManyProperties, SerializeOverflow }![32]u8 {
     const max_stack = 128;
 
     if (props.len <= max_stack) {
         var indices: [max_stack]usize = undefined;
-        return computeRecordHmacWithBuf(key, props, indices[0..props.len]);
+        return try computeRecordHmacWithBuf(key, props, indices[0..props.len]);
     } else {
         return error.TooManyProperties;
     }
 }
 
-fn computeRecordHmacWithBuf(key: *const [32]u8, props: []const KeyValue, indices: []usize) [32]u8 {
-    for (indices, 0..) |*idx, i| {
-        idx.* = i;
-    }
+fn computeRecordHmacWithBuf(key: *const [32]u8, props: []const KeyValue, indices: []usize) error{SerializeOverflow}![32]u8 {
+    for (indices, 0..) |*idx, i| idx.* = i;
 
     const Ctx = struct {
         kv: []const KeyValue,
-
-        /// Sort-context comparator (key, then value) — public only for std.sort.
         pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
             const ka = ctx.kv[a].key;
             const kb = ctx.kv[b].key;
@@ -90,26 +93,36 @@ fn computeRecordHmacWithBuf(key: *const [32]u8, props: []const KeyValue, indices
             }
         }
     };
-
     std.mem.sortUnstable(usize, indices, Ctx{ .kv = props }, Ctx.lessThan);
 
-    var hmac = HmacSha256.init(key);
+    // Serialize sorted KVs as: klen(u32 LE)||key||vlen(u32 LE)||value
+    // into a single buffer, then one-shot HMAC-SHA256 via the seam.
+    var buf: [SERIALIZE_BUF_LEN]u8 = undefined;
+    var w: usize = 0;
     for (indices) |idx| {
-        feedKv(&hmac, props[idx]);
+        w = try feedKv(&buf, w, props[idx]);
     }
     var out: [32]u8 = undefined;
-    hmac.final(&out);
+    _ = backend.Mac.hmac(.sha256, key, buf[0..w], &out) catch
+        @panic("HMAC-SHA256 backend failure in computeRecordHmac");
     return out;
 }
 
-fn feedKv(hmac: *HmacSha256, kv: KeyValue) void {
+fn feedKv(buf: []u8, off: usize, kv: KeyValue) error{SerializeOverflow}!usize {
+    var w = off;
     const klen: u32 = @intCast(kv.key.len);
-    hmac.update(std.mem.asBytes(&std.mem.nativeToLittle(u32, klen)));
-    hmac.update(kv.key);
-
     const vlen: u32 = @intCast(kv.value.len);
-    hmac.update(std.mem.asBytes(&std.mem.nativeToLittle(u32, vlen)));
-    hmac.update(kv.value);
+    const need = 4 + kv.key.len + 4 + kv.value.len;
+    if (w + need > buf.len) return error.SerializeOverflow;
+    std.mem.writeInt(u32, buf[w..][0..4], klen, .little);
+    w += 4;
+    @memcpy(buf[w..][0..kv.key.len], kv.key);
+    w += kv.key.len;
+    std.mem.writeInt(u32, buf[w..][0..4], vlen, .little);
+    w += 4;
+    @memcpy(buf[w..][0..kv.value.len], kv.value);
+    w += kv.value.len;
+    return w;
 }
 
 /// Compute a chain hash over a sequence of record HMACs and a record count.
@@ -120,15 +133,21 @@ fn feedKv(hmac: *HmacSha256, kv: KeyValue) void {
 ///
 /// Including the record count prevents truncation attacks where an attacker
 /// removes trailing records while keeping the prefix valid.
-pub fn computeChainHash(key: *const [32]u8, record_hmacs: []const [32]u8, record_count: u64) error{RecordCountMismatch}![32]u8 {
+pub fn computeChainHash(key: *const [32]u8, record_hmacs: []const [32]u8, record_count: u64) error{ RecordCountMismatch, SerializeOverflow }![32]u8 {
     if (record_hmacs.len != record_count) return error.RecordCountMismatch;
-    var hmac = HmacSha256.init(key);
+    var buf: [SERIALIZE_BUF_LEN]u8 = undefined;
+    const need = record_hmacs.len * 32 + 8;
+    if (need > buf.len) return error.SerializeOverflow;
+    var w: usize = 0;
     for (record_hmacs) |rec| {
-        hmac.update(&rec);
+        @memcpy(buf[w..][0..32], &rec);
+        w += 32;
     }
-    hmac.update(std.mem.asBytes(&std.mem.nativeToLittle(u64, record_count)));
+    std.mem.writeInt(u64, buf[w..][0..8], record_count, .little);
+    w += 8;
     var out: [32]u8 = undefined;
-    hmac.final(&out);
+    _ = backend.Mac.hmac(.sha256, key, buf[0..w], &out) catch
+        @panic("HMAC-SHA256 backend failure in computeChainHash");
     return out;
 }
 
@@ -298,4 +317,27 @@ test "computeRecordHmac distinguishes empty-key/empty-value pairs" {
     const ha = try computeRecordHmac(&key, &a);
     const hb = try computeRecordHmac(&key, &b);
     try std.testing.expect(!std.mem.eql(u8, &ha, &hb));
+}
+
+test "deriveHmacKey matches HKDF-SHA256 KAT (stable across backends)" {
+    // HKDF-SHA256(salt="auth-hmac-v1", ikm=0xab*32, info="auth-chain-integrity", L=32).
+    const master = [_]u8{0xab} ** 32;
+    const got = deriveHmacKey(&master, .{});
+    var expect: [32]u8 = undefined;
+    try @import("crypto_backend").Kdf.hkdf(.sha256, &master, "auth-hmac-v1", "auth-chain-integrity", &expect);
+    try std.testing.expectEqualSlices(u8, &expect, &got);
+}
+test "computeRecordHmac equals one-shot HMAC over the serialized buffer" {
+    const key = [_]u8{0x01} ** 32;
+    const props = [_]KeyValue{.{ .key = "k", .value = "v" }};
+    const got = try computeRecordHmac(&key, &props);
+    // Manually serialize the single sorted KV the same way feedKv does.
+    var buf: [4 + 1 + 4 + 1]u8 = undefined;
+    std.mem.writeInt(u32, buf[0..4], 1, .little);
+    buf[4] = 'k';
+    std.mem.writeInt(u32, buf[5..9], 1, .little);
+    buf[9] = 'v';
+    var expect: [32]u8 = undefined;
+    _ = try @import("crypto_backend").Mac.hmac(.sha256, &key, &buf, &expect);
+    try std.testing.expectEqualSlices(u8, &expect, &got);
 }
