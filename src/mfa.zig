@@ -12,10 +12,14 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const crypto = std.crypto;
+const crypto = std.crypto; // secureZero + timing_safe only (constant-time utils).
+const backend = @import("crypto_backend");
 const Allocator = std.mem.Allocator;
+// fips-exempt: legacy-interop — RFC 6238 TOTP mandates HMAC-SHA1; it is
+// a one-time-code derivation, not a confidentiality/integrity primitive,
+// and has no SHA-2 equivalent in the protocol. Stays on std.crypto under
+// both -Dfips values (see docs/FIPS.md). policy.Hash has no SHA-1 variant.
 const HmacSha1 = std.crypto.auth.hmac.HmacSha1;
-const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
 // otel seam — credentials NEVER pass to the seam. Only the auth-method
 // label ("mfa", "mfa.enroll") and the post-success subject id (the
 // already-public username on enrollment) reach span attributes; the
@@ -27,8 +31,9 @@ const observability = @import("observability");
 pub const ConfigError = error{InvalidMfaConfig};
 
 /// Errors from `enroll`.
-pub const EnrollError = Allocator.Error || std.Io.RandomSecureError || ConfigError || error{
+pub const EnrollError = Allocator.Error || ConfigError || error{
     DeterministicModeIsTestOnly,
+    CsprngFailure,
 };
 
 /// Errors from `generateCode`, `verifyCode`, `verifyCodeStep`, and `verifyCodeOnce`.
@@ -97,7 +102,8 @@ pub const SCRATCH_CODE_LEN: usize = 32;
 /// Bare SHA-256 (no KDF/salt) is sufficient: codes are 160-bit uniform CSPRNG output, so preimage cost is ~2^160 regardless of hash speed.
 pub fn hashScratchCode(code: []const u8) [32]u8 {
     var out: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(code, &out, .{});
+    _ = backend.Hash.digest(.sha256, code, &out) catch
+        @panic("SHA-256 backend failure in hashScratchCode");
     return out;
 }
 
@@ -120,7 +126,8 @@ pub fn verifyScratchCode(hashes: []const [32]u8, consumed: []bool, presented: []
     std.debug.assert(hashes.len == consumed.len);
     if (hashes.len != consumed.len) return null; // fail closed in release builds
     var presented_hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(presented, &presented_hash, .{});
+    _ = backend.Hash.digest(.sha256, presented, &presented_hash) catch
+        @panic("SHA-256 backend failure in verifyScratchCode");
     defer crypto.secureZero(u8, &presented_hash);
 
     var matched: ?usize = null;
@@ -295,12 +302,12 @@ fn generateSecret(allocator: Allocator, username: []const u8, config: MfaConfig)
         // username + salt. Physically unreachable outside `zig test`
         // builds: misuse in production would destroy MFA for all users.
         if (comptime !builtin.is_test) return error.DeterministicModeIsTestOnly;
-        var prk = HkdfSha256.extract(config.salt, username);
-        defer crypto.secureZero(u8, &prk);
-        HkdfSha256.expand(secret[0..TOTP_SECRET_RAW_LEN], "totp-secret-v1", prk);
+        // HKDF-SHA256(salt=config.salt, ikm=username, info="totp-secret-v1").
+        backend.Kdf.hkdf(.sha256, username, config.salt, "totp-secret-v1", secret[0..TOTP_SECRET_RAW_LEN]) catch
+            return error.DeterministicModeIsTestOnly;
     } else {
-        // Fail closed: no silent low-entropy fallback on a credential path.
-        try std.Io.Threaded.global_single_threaded.io().randomSecure(secret);
+        // Fail closed: CSPRNG via the FIPS seam (SP 800-90A under fips).
+        backend.Csprng.bytes(secret) catch return error.CsprngFailure;
     }
     return secret;
 }
@@ -345,7 +352,7 @@ pub fn enroll(allocator: Allocator, username: []const u8, config: MfaConfig) Enr
     while (allocated < config.scratch_code_count) : (allocated += 1) {
         var raw: [SCRATCH_CODE_RAW_LEN]u8 = undefined;
         defer crypto.secureZero(u8, &raw);
-        try std.Io.Threaded.global_single_threaded.io().randomSecure(&raw);
+        backend.Csprng.bytes(&raw) catch return error.CsprngFailure;
         const code = try base32Encode(allocator, &raw);
         scodes[allocated] = code;
     }
@@ -774,4 +781,24 @@ test "decodeSecret heap fallback: oversized invalid base32 errors without leakin
     bad[150] = '0'; // '0' is not in the RFC 4648 base32 alphabet
     const ts: u64 = 1_700_000_000_000;
     try std.testing.expectError(error.InvalidBase32, generateCode(allocator, &bad, ts, .{}));
+}
+
+test "hashScratchCode equals seam SHA2-256 (stable across backends)" {
+    const code = "JBSWY3DPEHPK3PXP";
+    const got = hashScratchCode(code);
+    var expect: [32]u8 = undefined;
+    _ = try @import("crypto_backend").Hash.digest(.sha256, code, &expect);
+    try std.testing.expectEqualSlices(u8, &expect, &got);
+}
+test "deterministic generateSecret matches seam HKDF-SHA256" {
+    // deterministic mode is test-only; available under `zig test`.
+    const allocator = std.testing.allocator;
+    const secret = try generateSecret(allocator, "alice", .{ .deterministic = true });
+    defer allocator.free(secret);
+    const expect_prk_out: [TOTP_SECRET_RAW_LEN]u8 = undefined;
+    // Salt default "auth-mfa-salt-v1", info "totp-secret-v1", ikm=username.
+    var okm: [TOTP_SECRET_RAW_LEN]u8 = undefined;
+    try @import("crypto_backend").Kdf.hkdf(.sha256, "alice", "auth-mfa-salt-v1", "totp-secret-v1", &okm);
+    _ = expect_prk_out;
+    try std.testing.expectEqualSlices(u8, &okm, secret);
 }
