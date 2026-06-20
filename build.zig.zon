@@ -14,6 +14,31 @@
             .hash = "otel-0.1.9-B0v3ltPiNQD_qlCLj0oUor4puasXR8KWGfPpaE48icHy",
             .lazy = true,
         },
+        // FIPS-140-3 backend. Only resolved when the build reaches
+        // `b.dependency("fips", ...)` under `-Dfips=true`; with the flag
+        // off it is never resolved and the produced artifact links no
+        // OpenSSL and contains zero fips symbols.
+        //
+        // Wired here as a LOCAL PATH dependency because the `fips` package
+        // has no git remote yet. Once `fips` is published+tagged, replace
+        // this with the lazy git+https form (mirroring the otel entry):
+        //
+        //     .fips = .{
+        //         .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.0#<commit-sha>",
+        //         .hash = "<zig-package-hash>",
+        //         .lazy = true,
+        //     },
+        //
+        // and switch the consumer build.zig back to `b.lazyDependency`.
+        //
+        // Path is build-root-relative (Zig 0.16 rejects absolute paths).
+        // The auth repo's real location is
+        // /home/benji/src/gl/gitlab.com/devnw/zig/auth and the fips
+        // package lives at /home/benji/src/devnw/zig/fips, so the relative
+        // path resolves there.
+        .fips = .{
+            .path = "../../../../../devnw/zig/fips",
+        },
     },
     .paths = .{
         "build.zig",

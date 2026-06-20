@@ -21,8 +21,24 @@ pub fn build(b: *std.Build) void {
         "Compile in otel instrumentation (off by default; zero overhead when off)",
     ) orelse false;
 
+    // -Dfips: route security crypto through the linked FIPS-140-3 provider.
+    // OFF by default; zero overhead when off (the fips dependency is never
+    // resolved and the seam selects the std.crypto shim).
+    const fips = b.option(
+        bool,
+        "fips",
+        "Route security crypto through the linked FIPS-140-3 provider (off by default; zero overhead when off)",
+    ) orelse false;
+    const openssl_path = b.option(
+        []const u8,
+        "openssl_path",
+        "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)",
+    );
+    const link = @import("src/link.zig");
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "with_otel", with_otel);
+    build_options.addOption(bool, "fips", fips);
     // Materialize ONE shared `build_options` module. Each consumer module
     // imports the SAME module instance via `addImport` so we don't end up
     // with two divergent `build_options` modules referencing the same
@@ -47,6 +63,45 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+
+    // ========================================================================
+    // Crypto seam (fips). Mirrors the otel seam above: ONE shared named
+    // module so every consumer resolves the same crypto_backend.zig via one
+    // module identity (prevents the Zig 0.16 "file exists in modules X and
+    // Y" dedup error, GAP-0020). Threads the SAME build_options_mod.
+    // ========================================================================
+    const crypto_backend_mod = b.addModule("crypto_backend", .{
+        .root_source_file = b.path("src/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+        },
+    });
+    // std_shim backend: always available, std.crypto-backed, no OpenSSL link.
+    const std_shim_mod = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    crypto_backend_mod.addImport("std_shim", std_shim_mod);
+    // fips backend: resolved LAZILY only under -Dfips=true so the disabled
+    // build never fetches OpenSSL-linked code. Currently wired as a LOCAL
+    // PATH dependency (see build.zig.zon); the production form is the
+    // commented git+https lazy entry there. `b.dependency` (path dep) is
+    // used here rather than `b.lazyDependency` because a local path dep is
+    // always available — no fetch step — but it is still gated behind
+    // `if (fips)` so -Dfips=false never resolves it.
+    if (fips) {
+        const fips_dep = b.dependency("fips", .{
+            .target = target,
+            .optimize = optimize,
+            .openssl_path = openssl_path orelse "/usr/local/ssl",
+        });
+        const fips_mod = fips_dep.module("fips");
+        crypto_backend_mod.addImport("fips", fips_mod);
+        link.linkOpenssl(b, fips_mod, openssl_path);
+    }
 
     // ========================================================================
     // Observability seam (otel) — gated otel dependency + init helper
@@ -100,6 +155,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "observability", .module = observability_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
         },
     });
     if (otel_module_opt) |om| module.addImport("otel", om);
@@ -110,6 +166,10 @@ pub fn build(b: *std.Build) void {
     // resolves (observability, observability_init, otel) is in scope.
     const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{ .root_module = module });
+    // Under -Dfips=true the lib root pulls crypto_backend -> fips
+    // (OpenSSL-linked), so link OpenSSL onto the shared `module` once.
+    // This covers unit_tests AND check (both use `module` as their root).
+    if (fips) link.linkOpenssl(b, module, openssl_path);
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
 
@@ -122,9 +182,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "auth", .module = module },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         }),
     });
+    if (fips) link.linkOpenssl(b, integration_tests.root_module, openssl_path);
     const run_integration_tests = b.addRunArtifact(integration_tests);
     integration_step.dependOn(&run_integration_tests.step);
 
@@ -151,9 +213,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "auth", .module = module },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         }),
     });
+    if (fips) link.linkOpenssl(b, observability_disabled_tests.root_module, openssl_path);
     const run_observability_disabled_tests = b.addRunArtifact(observability_disabled_tests);
     test_step.dependOn(&run_observability_disabled_tests.step);
 
@@ -170,9 +234,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "auth", .module = module },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         }),
     });
+    if (fips) link.linkOpenssl(b, observability_enabled_tests.root_module, openssl_path);
     if (with_otel) {
         // Re-resolve the otel module under the same `with_otel` guard
         // so the smoke test reaches `@import("otel")`. The earlier
@@ -188,6 +254,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_observability_enabled_tests.step);
 
     // ========================================================================
+    // Crypto-backend seam test: resolves the seam under both -Dfips values.
+    // ========================================================================
+    const crypto_seam_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/crypto_backend_seam_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    if (fips) link.linkOpenssl(b, crypto_seam_tests.root_module, openssl_path);
+    const run_crypto_seam_tests = b.addRunArtifact(crypto_seam_tests);
+    test_step.dependOn(&run_crypto_seam_tests.step);
+    check_step.dependOn(&crypto_seam_tests.step);
+
+    // ========================================================================
     // Example executable: `zig build example` builds and runs it.
     // ========================================================================
 
@@ -197,9 +282,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("examples/basic.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "auth", .module = module }},
+            .imports = &.{
+                .{ .name = "auth", .module = module },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            },
         }),
     });
+    if (fips) link.linkOpenssl(b, example_exe.root_module, openssl_path);
     const example_step = b.step("example", "Build and run the basic example");
     const run_example = b.addRunArtifact(example_exe);
     example_step.dependOn(&run_example.step);
