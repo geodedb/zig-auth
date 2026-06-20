@@ -9,7 +9,8 @@
 //! - secret_b64url: 32-byte secret, base64url encoded (no padding)
 
 const std = @import("std");
-const crypto = std.crypto;
+const crypto = std.crypto; // secureZero + timing_safe only (constant-time utils, not algorithms).
+const backend = @import("crypto_backend");
 const Allocator = std.mem.Allocator;
 // otel seam — when `-Dwith_otel=false` (default) every helper below
 // compiles to a comptime-known no-op. Credentials NEVER pass to the
@@ -30,14 +31,17 @@ fn nowSeconds() i64 {
     return std.Io.Timestamp.now(ioh(), .real).toSeconds();
 }
 
-const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
-
 /// Hash a raw secret for at-rest storage, peppered when configured.
+/// Peppered: HMAC-SHA256(pepper, secret). Unpeppered: SHA-256(secret).
+/// Both via the FIPS seam; a backend failure on these fixed-size
+/// 32-byte digests is unrecoverable corruption — panic.
 fn hashSecret(config: Config, secret: *const [SECRET_SIZE]u8, out: *[32]u8) void {
     if (config.pepper) |p| {
-        HmacSha256.create(out, secret, p);
+        _ = backend.Mac.hmac(.sha256, p, secret, out) catch
+            @panic("HMAC-SHA256 backend failure in hashSecret");
     } else {
-        crypto.hash.sha2.Sha256.hash(secret, out, .{});
+        _ = backend.Hash.digest(.sha256, secret, out) catch
+            @panic("SHA-256 backend failure in hashSecret");
     }
 }
 
@@ -69,10 +73,11 @@ pub const Config = struct {
 pub const ParseError = error{InvalidApiKeyFormat};
 
 /// Errors from `ApiKeyManager.createKey`.
-pub const CreateKeyError = Allocator.Error || std.Io.RandomSecureError || error{
+pub const CreateKeyError = Allocator.Error || error{
     InvalidKeyPrefix,
     KeyLimitReached,
     TokenIdCollision,
+    CsprngFailure,
 };
 
 /// Errors from `ApiKeyManager.validateKey`.
@@ -183,8 +188,10 @@ pub const ApiKeyManager = struct {
         var id: [TOKEN_ID_SIZE]u8 = undefined;
         var secret: [SECRET_SIZE]u8 = undefined;
         // Fail closed: no silent low-entropy fallback on a credential path.
-        try ioh().randomSecure(&id);
-        try ioh().randomSecure(&secret);
+        // CSPRNG via the FIPS seam (SP 800-90A DRBG under fips; std.crypto
+        // under the shim). A backend RNG failure aborts key creation.
+        backend.Csprng.bytes(&id) catch return error.CsprngFailure;
+        backend.Csprng.bytes(&secret) catch return error.CsprngFailure;
         defer crypto.secureZero(u8, &secret);
 
         var secret_hash: [32]u8 = undefined;
@@ -990,4 +997,22 @@ test "ApiKeyManager: cleanupExpired reclaims revoked keys (max_keys quota recove
     try std.testing.expectEqual(@as(usize, 1), try manager.cleanupExpired());
     const k2 = try manager.createKey(1, "new", &[_][]const u8{"r"}, null);
     defer allocator.free(k2);
+}
+
+test "hashSecret unpeppered equals seam SHA2-256 (stable across backends)" {
+    const secret = [_]u8{0x5a} ** SECRET_SIZE;
+    var got: [32]u8 = undefined;
+    hashSecret(.{}, &secret, &got);
+    var expect: [32]u8 = undefined;
+    _ = try @import("crypto_backend").Hash.digest(.sha256, &secret, &expect);
+    try std.testing.expectEqualSlices(u8, &expect, &got);
+}
+test "hashSecret peppered equals seam HMAC-SHA256 (stable across backends)" {
+    const secret = [_]u8{0x5a} ** SECRET_SIZE;
+    const pepper = [_]u8{0xc3} ** 32;
+    var got: [32]u8 = undefined;
+    hashSecret(.{ .pepper = &pepper }, &secret, &got);
+    var expect: [32]u8 = undefined;
+    _ = try @import("crypto_backend").Mac.hmac(.sha256, &pepper, &secret, &expect);
+    try std.testing.expectEqualSlices(u8, &expect, &got);
 }
