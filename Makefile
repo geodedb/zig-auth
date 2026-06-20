@@ -5,6 +5,7 @@
 .PHONY: all build test test-unit test-integration clean check fmt help dev ci example
 .PHONY: test-release test-release-safe test-release-fast test-release-small test-all-optimizations
 .PHONY: fuzz pre-commit-install pre-commit pre-commit-run
+.PHONY: test-fips test-dual
 
 # Default target: build and run tests
 all: build test-unit
@@ -30,6 +31,16 @@ test-unit:
 test-integration:
 	@echo "🔗 Running integration tests..."
 	@zig build test-integration --summary all
+
+# FIPS-mode tests (requires `make deps` from the fips package + OpenSSL).
+test-fips:
+	@echo "🔐 Running FIPS-mode tests..."
+	@zig build test -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
+	@zig build test-integration -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
+
+# Dual-mode gate: std shim AND OpenSSL FIPS backend must both be green.
+test-dual: test test-fips
+	@echo "✅ Dual-mode (-Dfips off + on) tests passed"
 
 # Clean build artifacts
 clean:
@@ -118,6 +129,8 @@ help:
 	@echo "  test                 Run all tests"
 	@echo "  test-unit            Run unit tests only"
 	@echo "  test-integration     Run integration tests only"
+	@echo "  test-fips            Run FIPS-mode tests (-Dfips=true; needs OpenSSL FIPS provider)"
+	@echo "  test-dual            Dual-mode gate: -Dfips off AND on must both pass"
 	@echo "  test-release         Release-mode test matrix (mirrors CI)"
 	@echo "  test-release-safe    Test with ReleaseSafe"
 	@echo "  test-release-fast    Test with ReleaseFast"

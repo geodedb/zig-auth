@@ -121,6 +121,40 @@ test-integration:
   needs:
     - build
 
+# FIPS provider provisioning: builds latest OpenSSL + FIPS provider.
+# Required before any -Dfips=true build/test (spec §8). The canonical
+# source of scripts/install-openssl-fips.sh is the `fips` package; it is
+# vendored here (and is also distributed via the ci-catalog FIPS
+# component).
+fips-deps:
+  stage: build
+  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  before_script:
+    - apt-get update && apt-get install -y build-essential perl wget ca-certificates sudo
+  script:
+    - OPENSSL_PREFIX=/usr/local/ssl ./scripts/install-openssl-fips.sh
+  artifacts:
+    paths:
+      - /usr/local/ssl
+    expire_in: 1 day
+
+# FIPS-mode tests: std shim suite already covered by `test`; this job
+# runs the OpenSSL FIPS backend suite (-Dfips=true).
+test-fips:
+  stage: test
+  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  before_script:
+    - *install-zig
+  script:
+    - zig build test -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    - zig build test-integration -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+  needs:
+    - build
+    - fips-deps
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
 # Release optimization tests
 test-release-safe:
   stage: test
