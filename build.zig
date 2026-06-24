@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     // with two divergent `build_options` modules referencing the same
     // file path (Zig 0.16 errors out with "file exists in modules X and
     // X0" when that happens).
+    build_options.addOption([]const u8, "package_name", "auth");
     const build_options_mod = build_options.createModule();
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
