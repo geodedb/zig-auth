@@ -8,21 +8,21 @@ default:
 
 include:
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.54.0
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.54.0
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.54.0
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.54.0
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
+  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.54.0
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.54.0
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.54.0
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.27.0
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.54.0
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.54.0
 
 variables:
   ZIG_VERSION: "0.16.0"
@@ -93,7 +93,7 @@ zig-format:
 build:
   stage: build
   # digest of bookworm-slim as of 2026-06-12 — bump deliberately
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -102,7 +102,7 @@ build:
 # Unit tests
 test:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -113,7 +113,7 @@ test:
 # Integration tests
 test-integration:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -128,7 +128,7 @@ test-integration:
 # component).
 fips-deps:
   stage: build
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - apt-get update && apt-get install -y build-essential perl wget ca-certificates sudo
   script:
@@ -142,7 +142,7 @@ fips-deps:
 # runs the OpenSSL FIPS backend suite (-Dfips=true).
 test-fips:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -158,7 +158,7 @@ test-fips:
 # Release optimization tests
 test-release-safe:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -169,7 +169,7 @@ test-release-safe:
 # ReleaseFast tests
 test-release-fast:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -179,7 +179,7 @@ test-release-fast:
 
 test-integration-release-safe:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -189,7 +189,7 @@ test-integration-release-safe:
 
 test-integration-release-fast:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -200,7 +200,7 @@ test-integration-release-fast:
 # ReleaseSmall tests
 test-release-small:
   stage: test
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
@@ -217,7 +217,7 @@ test-release-small:
 #   other : fuzzer found a crash - fail the job
 fuzz:
   stage: fuzz
-  image: debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3
+  image: debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
   before_script:
     - *install-zig
   script:
