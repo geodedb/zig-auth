@@ -1,6 +1,6 @@
 .{
     .name = .auth,
-    .version = "0.1.12",
+    .version = "0.1.14",
     .fingerprint = 0xf8deb0596799be5b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -10,8 +10,8 @@
         // produced artifact contains zero otel symbols (verified by
         // otel/scripts/verify-consumer-noop.sh).
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#v0.1.17",
-            .hash = "otel-0.1.17-B0v3lvT2NQAYURxdLxS-8cMcAqL8Qfniddlwq1ai86G7",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.19#d928525c34a4b50c9536b064e601ee45760cbabd",
+            .hash = "otel-0.1.19-B0v3liP3NQDyqyLnDV_6rFYepKA7MNgekcHFstany4dq",
             .lazy = true,
         },
         // FIPS-140-3 backend. Only resolved when the build reaches
@@ -24,8 +24,8 @@
         // this with the lazy git+https form (mirroring the otel entry):
         //
         //     .fips = .{
-        //         .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.0#<commit-sha>",
-        //         .hash = "<zig-package-hash>",
+        //         .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.1#4041d9cfdeadcab665644b3f4d3362c276f94bb7",
+        //         .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
         //         .lazy = true,
         //     },
         //
@@ -37,7 +37,7 @@
         // package lives at /home/benji/src/devnw/zig/fips, so the relative
         // path resolves there.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.1",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.1#4041d9cfdeadcab665644b3f4d3362c276f94bb7",
             .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
             .lazy = true,
         },
