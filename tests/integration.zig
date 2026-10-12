@@ -177,7 +177,10 @@ test "integration: MFA with custom salt isolates secrets (deterministic)" {
 }
 
 test "integration: version is defined" {
-    try std.testing.expectEqualStrings("0.1.12", auth.version);
+    // A hard-coded copy of the version went stale on every release bump and
+    // failed test-integration on main. Assert the shape instead: a valid
+    // semantic version (parse rejects an empty string).
+    _ = try std.SemanticVersion.parse(auth.version);
 }
 
 // ============================================================================
