@@ -87,21 +87,19 @@ pub fn build(b: *std.Build) void {
     });
     crypto_backend_mod.addImport("std_shim", std_shim_mod);
     // fips backend: resolved LAZILY only under -Dfips=true so the disabled
-    // build never fetches OpenSSL-linked code. Currently wired as a LOCAL
-    // PATH dependency (see build.zig.zon); the production form is the
-    // commented git+https lazy entry there. `b.dependency` (path dep) is
-    // used here rather than `b.lazyDependency` because a local path dep is
-    // always available — no fetch step — but it is still gated behind
-    // `if (fips)` so -Dfips=false never resolves it.
+    // build never fetches OpenSSL-linked code. build.zig.zon pins the
+    // published fips release as a lazy git+https dependency, so it must be
+    // requested with `b.lazyDependency` (`b.dependency` panics on a lazy dep).
     if (fips) {
-        const fips_dep = b.dependency("fips", .{
+        if (b.lazyDependency("fips", .{
             .target = target,
             .optimize = optimize,
             .openssl_path = openssl_path orelse "/usr/local/ssl",
-        });
-        const fips_mod = fips_dep.module("fips");
-        crypto_backend_mod.addImport("fips", fips_mod);
-        link.linkOpenssl(b, fips_mod, openssl_path);
+        })) |fips_dep| {
+            const fips_mod = fips_dep.module("fips");
+            crypto_backend_mod.addImport("fips", fips_mod);
+            link.linkOpenssl(b, fips_mod, openssl_path);
+        }
     }
 
     // ========================================================================
