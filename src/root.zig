@@ -35,7 +35,7 @@
 const std = @import("std");
 
 /// Library version — MUST match build.zig.zon .version (checked by pre-commit).
-pub const version = "0.1.20";
+pub const version = "0.1.21";
 
 /// HMAC-SHA256 record hashing, chain integrity, and HKDF key derivation.
 pub const hmac = @import("hmac.zig");
