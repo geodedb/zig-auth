@@ -108,7 +108,7 @@ zig-format:
 build:
   stage: build
   # digest of bookworm-slim as of 2026-06-12 — bump deliberately
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -117,7 +117,7 @@ build:
 # Unit tests
 test:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -128,7 +128,7 @@ test:
 # Integration tests
 test-integration:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -143,7 +143,7 @@ test-integration:
 # component).
 fips-deps:
   stage: build
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   # Pin to x86: fips-deps hands a compiled OpenSSL to test-fips as an
   # artifact, so both jobs must run on the same CPU architecture.
   tags: [company, linux, x86]
@@ -170,7 +170,7 @@ fips-deps:
 test-fips:
   stage: test
   tags: [company, linux, x86]
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -187,7 +187,7 @@ test-fips:
 # Release optimization tests
 test-release-safe:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -198,7 +198,7 @@ test-release-safe:
 # ReleaseFast tests
 test-release-fast:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -208,7 +208,7 @@ test-release-fast:
 
 test-integration-release-safe:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -218,7 +218,7 @@ test-integration-release-safe:
 
 test-integration-release-fast:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -229,7 +229,7 @@ test-integration-release-fast:
 # ReleaseSmall tests
 test-release-small:
   stage: test
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -246,7 +246,7 @@ test-release-small:
 #   other : fuzzer found a crash - fail the job
 fuzz:
   stage: fuzz
-  image: debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+  image: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
   before_script:
     - *install-zig
   script:
@@ -298,7 +298,7 @@ hook-env-regression:
 
 test-source-package:
   stage: test
-  image: debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+  image: debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
   tags: [company, linux, x86]
   before_script:
     - *install-zig
