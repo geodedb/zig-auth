@@ -1,6 +1,6 @@
 .{
     .name = .auth,
-    .version = "0.1.22",
+    .version = "0.1.23",
     .fingerprint = 0xf8deb0596799be5b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -10,8 +10,8 @@
         // produced artifact contains zero otel symbols (verified by
         // otel/scripts/verify-consumer-noop.sh).
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.29#3cdcb910623eeca1b77073a6fe508ec3fa6f5b6b",
-            .hash = "otel-0.1.29-B0v3lrGuNQCOn83lNntyyw52jyFfRPYIeOFfuO1GQeAI",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.30#dbf58bae612ef3f5f78c62c130b4c6d63f5aa297",
+            .hash = "otel-0.1.30-B0v3lrGuNQDL0D3_KAb6qK6MaYmz2QeutCp0Sg3SL1H7",
             .lazy = true,
         },
         // FIPS-140-3 backend, pinned to a published fips release. Lazy: only
